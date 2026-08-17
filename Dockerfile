@@ -100,6 +100,20 @@ RUN set -eux \
     && chmod +x /ffmpeg-out/ffmpeg /ffmpeg-out/ffprobe
 
 # ============================================================
+# 第二阶段 B：前端构建（Vue 3 SPA → frontend/dist）
+# ============================================================
+FROM node:22-alpine AS frontend-builder
+
+WORKDIR /frontend
+
+# 先装依赖（利用层缓存），再拷源码构建
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --include=dev --no-audit --no-fund
+
+COPY frontend/ ./
+RUN npm run build
+
+# ============================================================
 # 第三阶段：运行阶段
 # ============================================================
 FROM python:3.11-slim
@@ -180,6 +194,9 @@ COPY --from=builder /root/.local /home/y2a/.local
 # 从 ffmpeg-builder 阶段复制二进制文件（仅 ffmpeg + ffprobe）
 COPY --from=ffmpeg-builder /ffmpeg-out/ffmpeg /app/ffmpeg/bin/ffmpeg
 COPY --from=ffmpeg-builder /ffmpeg-out/ffprobe /app/ffmpeg/bin/ffprobe
+
+# 从前端构建阶段复制 SPA 产物（由 Flask 的 /ui 路由托管）
+COPY --from=frontend-builder /frontend/dist /app/frontend/dist
 
 # 复制应用代码
 COPY --chown=y2a:y2a . .

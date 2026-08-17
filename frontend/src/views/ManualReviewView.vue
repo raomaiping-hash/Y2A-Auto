@@ -1,0 +1,219 @@
+<script setup lang="ts">
+import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { tasksApi } from '@/api/endpoints'
+import { useToastStore } from '@/stores/toast'
+import { ApiError } from '@/api/client'
+import type { Task } from '@/api/types'
+import TaskStatusBadge from '@/components/ui/TaskStatusBadge.vue'
+import UiSkeleton from '@/components/ui/UiSkeleton.vue'
+import UiEmpty from '@/components/ui/UiEmpty.vue'
+import UiConfirm from '@/components/ui/UiConfirm.vue'
+
+const router = useRouter()
+const toast = useToastStore()
+
+const tasks = ref<Task[]>([])
+const loading = ref(true)
+
+async function load() {
+  loading.value = true
+  try {
+    const data = await tasksApi.list({ status: 'awaiting_manual_review', per_page: 100 })
+    tasks.value = data.tasks
+  } catch (e) {
+    toast.error('加载审核列表失败', (e as Error).message)
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(load)
+
+const confirmState = ref<{ open: boolean; title: string; message: string; action: () => Promise<unknown> } | null>(null)
+
+async function runConfirm() {
+  if (!confirmState.value) return
+  const action = confirmState.value.action
+  try {
+    await action()
+    confirmState.value = null
+    load()
+  } catch (e) {
+    toast.error('操作失败', e instanceof ApiError ? e.message : '请稍后重试')
+    confirmState.value = null
+  }
+}
+
+async function forceUploadTask(task: Task) {
+  try {
+    const r = await tasksApi.forceUpload(task.id)
+    toast.info(r.message)
+    load()
+  } catch (e) {
+    toast.error('强制上传失败', e instanceof ApiError ? e.message : '请稍后重试')
+  }
+}
+
+function askDelete(task: Task) {
+  confirmState.value = {
+    open: true,
+    title: '删除任务',
+    message: `确定要删除任务「${taskTitle(task)}」吗？其下载文件也会一并删除。`,
+    action: async () => {
+      await tasksApi.remove(task.id, true)
+      load()
+    },
+  }
+}
+
+function taskTitle(task: Task): string {
+  return task.video_title_translated || task.video_title_original || task.id.slice(0, 8)
+}
+
+const reviewCount = computed(() => tasks.value.length)
+</script>
+
+<template>
+  <div>
+    <div class="page-header">
+      <div class="page-header-text">
+        <h1 class="page-title">人工审核</h1>
+        <p class="page-subtitle">{{ reviewCount }} 个任务等待处理 · 审核内容并决定是否上传</p>
+      </div>
+      <div class="page-actions">
+        <button class="btn btn-secondary btn-sm" :disabled="loading" @click="load">
+          <i class="bi bi-arrow-clockwise"></i> 刷新
+        </button>
+      </div>
+    </div>
+
+    <div v-if="loading" class="card card-pad">
+      <UiSkeleton :rows="8" />
+    </div>
+    <div v-else-if="!tasks.length" class="card">
+      <UiEmpty
+        icon="bi-patch-check"
+        title="暂无待审核任务"
+        description="需要人工审核的任务（内容审核不通过 / 翻译缺失等）会出现在这里。"
+      />
+    </div>
+    <div v-else class="review-list">
+      <div v-for="task in tasks" :key="task.id" class="card review-card">
+        <div class="review-head">
+          <div class="flex items-center gap-2 grow" style="min-width: 0">
+            <span class="mono text-muted fs-xs">{{ task.id.slice(0, 8) }}</span>
+            <TaskStatusBadge :status="task.status" />
+          </div>
+          <div class="flex gap-2">
+            <button v-if="task.can_retry_translation" class="btn btn-secondary btn-sm" @click="tasksApi.retryTranslation(task.id).then(r => { toast.success(r.message); load() }).catch(e => toast.error('重试失败', e.message))">
+              <i class="bi bi-translate"></i> 重试翻译
+            </button>
+            <button class="btn btn-success btn-sm" @click="forceUploadTask(task)">
+              <i class="bi bi-cloud-arrow-up-fill"></i> 强制上传
+            </button>
+            <button class="btn btn-danger btn-sm" @click="askDelete(task)">
+              <i class="bi bi-trash3"></i> 删除
+            </button>
+          </div>
+        </div>
+
+        <div class="review-body" @click="router.push(`/tasks/${task.id}`)">
+          <div class="review-title clamp-2">{{ task.video_title_translated || task.video_title_original || '（未获取标题）' }}</div>
+          <div v-if="task.video_title_original && task.video_title_original !== task.video_title_translated" class="review-origin clamp-1">
+            原文：{{ task.video_title_original }}
+          </div>
+          <div v-if="task.error_message" class="callout callout-danger review-error">
+            <i class="bi bi-exclamation-octagon-fill"></i>
+            <span>{{ task.error_message }}</span>
+          </div>
+        </div>
+
+        <div class="review-foot">
+          <button class="btn btn-ghost btn-sm" @click="router.push(`/tasks/${task.id}`)">
+            编辑元数据 <i class="bi bi-arrow-right"></i>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <UiConfirm
+      :open="confirmState?.open ?? false"
+      :title="confirmState?.title ?? ''"
+      :message="confirmState?.message ?? ''"
+      :danger="true"
+      @close="confirmState = null"
+      @confirm="runConfirm"
+    />
+  </div>
+</template>
+
+<style scoped>
+.page-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-5);
+}
+.page-title {
+  font-size: var(--fs-2xl);
+  font-weight: 700;
+}
+.page-subtitle {
+  margin-top: 4px;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+.page-actions {
+  display: flex;
+  gap: var(--sp-3);
+}
+
+.review-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+.review-card {
+  padding: var(--sp-5);
+}
+.review-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-3);
+}
+.review-body {
+  cursor: pointer;
+  border-radius: var(--radius-md);
+  transition: background var(--dur-fast) var(--ease);
+}
+.review-title {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+.review-origin {
+  margin-top: 4px;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.review-error {
+  margin-top: var(--sp-3);
+}
+.review-foot {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--border-subtle);
+  margin-top: var(--sp-3);
+}
+.clamp-1 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+</style>

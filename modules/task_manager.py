@@ -1603,30 +1603,51 @@ def get_all_tasks():
     finally:
         conn.close()
 
-def get_tasks_paginated(page=1, per_page=20):
+def get_tasks_paginated(page=1, per_page=20, status=None, search=None):
     """
     获取分页任务信息
-    
+
     Args:
         page (int): 页码，从1开始
         per_page (int): 每页数量，默认20
-    
+        status (str, optional): 按状态筛选
+        search (str, optional): 按标题模糊搜索
+
     Returns:
         dict: 包含tasks、total、page、per_page、total_pages等信息的字典
     """
     conn = get_db_connection()
     try:
+        where_clauses = []
+        params = []
+
+        if status:
+            where_clauses.append('status = ?')
+            params.append(status)
+
+        if search and str(search).strip():
+            like = f'%{str(search).strip()}%'
+            where_clauses.append(
+                '(video_title_original LIKE ? OR video_title_translated LIKE ?)'
+            )
+            params.append(like)
+            params.append(like)
+
+        where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ''
+
         # 获取总数
-        cursor = conn.execute('SELECT COUNT(*) FROM tasks')
+        cursor = conn.execute(f'SELECT COUNT(*) FROM tasks{where_sql}', params)
         total = cursor.fetchone()[0]
-        
+
         # 计算分页参数
         total_pages = (total + per_page - 1) // per_page  # 向上取整
         offset = (page - 1) * per_page
-        
+
         # 获取分页数据
-        cursor = conn.execute('SELECT * FROM tasks ORDER BY created_at DESC LIMIT ? OFFSET ?', 
-                            (per_page, offset))
+        cursor = conn.execute(
+            f'SELECT * FROM tasks{where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?',
+            params + [per_page, offset]
+        )
         tasks = [dict(row) for row in cursor.fetchall()]
         
         return {

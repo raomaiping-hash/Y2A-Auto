@@ -7,6 +7,12 @@ __pycache__/
 dist/
 build/
 
+# Node（前端依赖与本地构建产物不入构建上下文，Dockerfile 内有独立构建阶段）
+node_modules/
+frontend/dist/
+.uv-cache/
+.uv-python/
+
 # Virtual environment
 .venv/
 venv/

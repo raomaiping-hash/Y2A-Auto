@@ -15,7 +15,7 @@ import threading
 
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
-from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, send_file, session, Response, stream_with_context
+from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, send_file, send_from_directory, session, Response, stream_with_context
 from functools import wraps
 from flask_cors import CORS
 from PIL import Image, UnidentifiedImageError
@@ -58,6 +58,13 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)  # 用于flash消息
+
+# JSON API v1（Vue 3 SPA 专用）
+from modules.api_v1 import api_bp
+app.register_blueprint(api_bp)
+
+# 前端构建产物目录（frontend/dist）
+FRONTEND_DIST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'frontend', 'dist')
 
 
 @app.context_processor
@@ -1567,9 +1574,32 @@ def logout():
     return redirect(url_for('login'))
 
 @app.route('/')
-@login_required
 def index():
-    """首页"""
+    """根路径跳转到新版 SPA 控制台。旧版页面路由保留，便于过渡。"""
+    return redirect('/ui/')
+
+@app.route('/ui', defaults={'path': ''})
+@app.route('/ui/', defaults={'path': ''})
+@app.route('/ui/<path:path>')
+def spa_console(path):
+    """托管 Vue 3 SPA 构建产物，非静态资源回退到 index.html（History 路由）。"""
+    if not os.path.isdir(FRONTEND_DIST_DIR):
+        return (
+            '前端尚未构建：请在 frontend/ 目录执行 npm install && npm run build 后重试。',
+            503,
+        )
+    if path:
+        full_path = safe_join(FRONTEND_DIST_DIR, path)
+        if full_path and os.path.isfile(full_path):
+            return send_from_directory(FRONTEND_DIST_DIR, path)
+    response = send_from_directory(FRONTEND_DIST_DIR, 'index.html')
+    response.headers['Cache-Control'] = 'no-cache'
+    return response
+
+@app.route('/legacy_index')
+@login_required
+def legacy_index():
+    """首页（旧版仪表盘，保留给未迁移页面使用）"""
     logger.info("访问首页")
     # 统计信息用于仪表盘
     try:
