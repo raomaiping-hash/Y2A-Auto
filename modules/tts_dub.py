@@ -399,6 +399,61 @@ def _cue_texts_in_window(cues: List[Dict[str, Any]], start_s: float, end_s: floa
     return ' '.join(parts)
 
 
+def ensure_reference_model(
+    api_key: str,
+    base_url: str,
+    sample_path: str,
+    logger: logging.Logger,
+    title: str = 'Y2A-Auto 配音克隆',
+) -> Optional[str]:
+    """把参考音频上传为私有克隆模型，返回 reference_id；带 md5 缓存避免重复建库。"""
+    import hashlib
+    import requests
+
+    with open(sample_path, 'rb') as fh:
+        sample_bytes = fh.read()
+    digest = hashlib.md5(sample_bytes).hexdigest()
+
+    cache_path = os.path.join(get_app_subdir('models'), 'tts_voice_models.json')
+    try:
+        with open(cache_path, 'r', encoding='utf-8') as fh:
+            cache = json.load(fh)
+        if digest in cache:
+            logger.info('复用已缓存的克隆声音模型 %s', cache[digest])
+            return cache[digest]
+    except Exception:
+        cache = {}
+
+    resp = requests.post(
+        f'{base_url.rstrip("/")}/model',
+        headers={'Authorization': f'Bearer {api_key}'},
+        data={
+            'type': 'tts',
+            'title': f'{title} {time.strftime("%m%d%H%M")}',
+            'train_mode': 'fast',
+            'visibility': 'private',
+        },
+        files={'voices': ('reference.mp3', sample_bytes, 'audio/mpeg')},
+        timeout=120,
+    )
+    if resp.status_code != 201:
+        logger.warning('创建克隆声音模型失败 HTTP %s: %s', resp.status_code, resp.text[:160])
+        return None
+    model_id = str((resp.json() or {}).get('_id') or '').strip()
+    if not model_id:
+        logger.warning('创建克隆声音模型未返回 id')
+        return None
+    try:
+        cache[digest] = model_id
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        with open(cache_path, 'w', encoding='utf-8') as fh:
+            json.dump(cache, fh, ensure_ascii=False, indent=1)
+    except Exception:
+        pass
+    logger.info('克隆声音模型已创建：%s', model_id)
+    return model_id
+
+
 # ---------------------------------------------------------------- 主流程
 
 def build_dubbed_audio(
@@ -499,17 +554,41 @@ def build_dubbed_audio(
         reference_id = str(config.get('TTS_DUB_VOICE_ID') or '').strip() or None
         reference_audio: Optional[bytes] = None
         reference_text = ''
+        base_url = str(config.get('TTS_DUB_BASE_URL') or DEFAULT_BASE_URL)
         if reference_id:
             pass  # 使用固定声音 ID
         elif reference_mode == 'auto':
-            reference_audio = extract_reference_sample(orig_wav, total_duration, original_cues, ffmpeg, logger)
-            if reference_audio:
-                first_cue = original_cues[0] if original_cues else None
-                if first_cue:
-                    reference_text = ' '.join(str(c.get('text') or '') for c in original_cues[:3])[:300]
-                logger.info('参考音色：零样本克隆（%.2fKB）', len(reference_audio) / 1024)
-            else:
-                logger.info('参考音色：未获得采样，使用默认音色')
+            # 零样本 references 在部分端点会被拒（400 invalid），
+            # 改为官方推荐路径：把参考音频上传为私有克隆模型，全部 cue 用 reference_id
+            sample_path: Optional[str] = None
+            try:
+                sample_window = None
+                duration_for_sample = total_duration
+                for cue in original_cues:
+                    s0, e0 = float(cue.get('start', 0) or 0), float(cue.get('end', 0) or 0)
+                    if e0 - s0 >= 10.0:
+                        sample_window = (s0, min(e0, s0 + 30.0))
+                        break
+                if sample_window is None and total_duration > 10:
+                    sample_window = (0.0, min(25.0, total_duration))
+                if sample_window:
+                    sample_path = os.path.join(tmp_dir, 'reference_sample.mp3')
+                    _run([
+                        ffmpeg, '-y',
+                        '-ss', f'{sample_window[0]:.3f}', '-t', f'{sample_window[1] - sample_window[0]:.3f}',
+                        '-i', orig_wav, '-ac', '1', '-ar', '44100', '-c:a', 'libmp3lame', '-b:a', '128k',
+                        sample_path,
+                    ], logger)
+            except Exception as exc:
+                logger.warning('参考采样截取失败: %s', exc)
+            if sample_path and os.path.isfile(sample_path):
+                reference_id = ensure_reference_model(api_key, base_url, sample_path, logger)
+                if reference_id:
+                    logger.info('参考音色：克隆模型已就绪 %s', reference_id)
+            if not reference_id:
+                logger.info('参考音色：克隆不可用，使用默认音色')
+        else:
+            logger.info('参考音色：默认音色')
 
         # 4. 逐 cue 合成 + 拟合 + 定位
         client = FishAudioTtsClient(
