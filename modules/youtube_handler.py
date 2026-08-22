@@ -311,60 +311,6 @@ def _set_yt_dlp_format_options(
         cmd.extend(['--merge-output-format', merge_output_format])
 
 
-def _build_subtitle_download_args(
-    config: dict[str, Any] | None,
-    *,
-    include_subtitles: bool,
-) -> list[str]:
-    if not include_subtitles:
-        return ['--no-write-subs']
-
-    # 仅当用户显式允许 YouTube 自动生成字幕时才下载字幕。
-    # yt-dlp 的 --write-subs 会下载所有字幕（含自动生成），
-    # --no-write-auto-subs 在新版本中无效，无法可靠区分。
-    # 因此当 YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED=False 时，
-    # 直接禁用字幕下载，让后续 ASR 流程负责生成字幕。
-    if not bool((config or {}).get('YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED', False)):
-        return ['--no-write-subs']
-
-    # 只下载目标语言字幕：下游仅消费中文（直接烧录）与英文（翻译），
-    # 通配（en.*）会连带下载 YouTube 自动翻译的衍生语言（en-ar/en-de…），既冗余又易触发 429
-    sub_langs = ['en', 'zh-Hans', 'zh-Hant', 'zh-CN', 'zh-TW']
-    source_lang = str((config or {}).get('SUBTITLE_SOURCE_LANGUAGE') or 'auto').strip().lower()
-    if source_lang and source_lang not in ('auto', 'en', 'zh'):
-        sub_langs.insert(0, source_lang)
-
-    return [
-        '--write-subs',
-        '--sub-langs', ','.join(sub_langs),
-        '--convert-subs', 'srt',
-        '--write-auto-subs',
-    ]
-
-
-def _require_ffmpeg_for_subtitles(
-    config: dict[str, Any] | None,
-    ffmpeg_location: str | None,
-    *,
-    skip_download: bool,
-) -> str | None:
-    """ffmpeg 预检：字幕转换（--convert-subs srt）强制依赖 ffmpeg。
-
-    返回错误消息（需要快速失败）或 None（无需拦截）。
-    Docker 环境由镜像自带 ffmpeg 二进制（走 PATH），视为可用。
-    """
-    if skip_download:
-        return None
-    if not bool((config or {}).get('YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED', False)):
-        return None
-    if bool(ffmpeg_location) or is_docker_env():
-        return None
-    return (
-        "缺少 ffmpeg：字幕下载后需转换为 srt（--convert-subs srt）。"
-        "请将静态 ffmpeg/ffprobe 二进制放入项目 ffmpeg/ 目录，或安装到系统 PATH。"
-    )
-
-
 def _is_format_selection_error(error_text: str | None) -> bool:
     """判断是否属于格式选择失败，而非视频不可访问。"""
     if not error_text:
@@ -842,15 +788,6 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
         if proxy_url:
             logger.info("下载 YouTube 时已启用代理")
 
-        # ffmpeg 预检：字幕转换（--convert-subs srt）强制依赖 ffmpeg。
-        # 缺失时快速失败并给出明确指引，避免进入无意义的三次重试循环。
-        ffmpeg_error = _require_ffmpeg_for_subtitles(
-            config, ffmpeg_location, skip_download=skip_download
-        )
-        if ffmpeg_error:
-            logger.error(ffmpeg_error)
-            return False, ffmpeg_error
-        
         # 配置下载线程数
         download_threads = config.get('YOUTUBE_DOWNLOAD_THREADS', 4)
         cmd.extend(['--concurrent-fragments', str(download_threads)])
@@ -893,25 +830,20 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
                 '--ignore-no-formats-error',
             ])
         elif only_video:
-            subtitle_download_enabled = bool(
-                config.get('SUBTITLE_TRANSLATION_ENABLED', False)
-                or config.get('SUBTITLE_EMBED_IN_VIDEO', False)
-            )
             cmd.extend([
                 '--no-write-info-json',
                 '--no-write-thumbnail',
+                # 不下载任何字幕（含自动字幕）：字幕统一由 ASR 语音识别生成，
+                # 避免 YouTube 自动字幕的滚动窗口重复问题
+                '--no-write-subs',
             ])
-            cmd.extend(_build_subtitle_download_args(
-                config,
-                include_subtitles=subtitle_download_enabled,
-            ))
         else:
             # 默认全下载
             cmd.extend([
                 '--write-info-json',
                 '--write-thumbnail',
+                '--no-write-subs',
             ])
-            cmd.extend(_build_subtitle_download_args(config, include_subtitles=True))
 
         # 传入 ffmpeg 位置（若检测到本地路径；在 Docker 中让 yt-dlp 走 PATH）
         if ffmpeg_location and os.path.isabs(ffmpeg_location):

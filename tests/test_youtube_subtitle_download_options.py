@@ -19,50 +19,26 @@ def _load_function(name):
 
 
 class YouTubeSubtitleDownloadOptionsTests(unittest.TestCase):
-    def test_returns_no_write_subs_when_subtitles_disabled(self):
-        build_args = _load_function("_build_subtitle_download_args")
+    def test_download_command_always_disables_subtitle_download(self):
+        """自动字幕已彻底移除：下载命令恒为 --no-write-subs，字幕统一走 ASR。
 
-        args = build_args({}, include_subtitles=False)
+        源码级回归测试：防止 --write-auto-subs / --write-subs 逻辑被重新引入。
+        """
+        module_path = pathlib.Path(__file__).resolve().parents[1] / "modules" / "youtube_handler.py"
+        source = module_path.read_text(encoding="utf-8")
 
-        self.assertEqual(args, ["--no-write-subs"])
+        self.assertIn("--no-write-subs", source)
+        self.assertNotIn("--write-auto-subs", source)
+        self.assertNotIn("--write-subs", source)
+        self.assertNotIn("YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED", source)
+        self.assertNotIn("_build_subtitle_download_args", source)
+        self.assertNotIn("_require_ffmpeg_for_subtitles", source)
 
-    def test_returns_no_write_subs_when_auto_gen_disabled(self):
-        """YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED 默认 False，不下载字幕"""
-        build_args = _load_function("_build_subtitle_download_args")
-
-        args = build_args({}, include_subtitles=True)
-
-        self.assertEqual(args, ["--no-write-subs"])
-
-    def test_includes_target_language_sub_langs_when_enabled(self):
-        """启用自动字幕时只下载目标语言（en/zh），避免全量下载触发 429 限流"""
-        build_args = _load_function("_build_subtitle_download_args")
-
-        args = build_args(
-            {"YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED": True},
-            include_subtitles=True,
-        )
-
-        self.assertIn("--write-auto-subs", args)
-        self.assertEqual(
-            args,
-            ["--write-subs", "--sub-langs", "en,zh-Hans,zh-Hant,zh-CN,zh-TW", "--convert-subs", "srt", "--write-auto-subs"],
-        )
-        self.assertNotIn("--all-subs", args)
-
-    def test_includes_explicit_source_language_in_sub_langs(self):
-        build_args = _load_function("_build_subtitle_download_args")
-
-        args = build_args(
-            {
-                "YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED": True,
-                "SUBTITLE_SOURCE_LANGUAGE": "ja",
-            },
-            include_subtitles=True,
-        )
-
-        lang_index = args.index("--sub-langs")
-        self.assertEqual(args[lang_index + 1], "ja,en,zh-Hans,zh-Hant,zh-CN,zh-TW")
+    def test_config_no_longer_exposes_auto_generated_toggle(self):
+        """配置中心不再有自动字幕开关；旧配置键由 prune 自动清理。"""
+        module_path = pathlib.Path(__file__).resolve().parents[1] / "modules" / "config_manager.py"
+        source = module_path.read_text(encoding="utf-8")
+        self.assertNotIn("YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED", source)
 
 
 class YtDlpErrorSummaryAndFfmpegPreflightTests(unittest.TestCase):
@@ -95,43 +71,6 @@ class YtDlpErrorSummaryAndFfmpegPreflightTests(unittest.TestCase):
         summary = summarize("[download] 42.0% of 1.00GiB\n", "")
 
         self.assertIn("42.0%", summary)
-
-    def test_ffmpeg_preflight_blocks_when_subtitles_need_conversion(self):
-        require_ffmpeg = _load_function("_require_ffmpeg_for_subtitles")
-        require_ffmpeg.__globals__["is_docker_env"] = mock.Mock(return_value=False)
-
-        error = require_ffmpeg(
-            {"YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED": True},
-            "ffmpeg_location",
-            skip_download=False,
-        )
-
-        self.assertIsNone(error)
-
-        error = require_ffmpeg(
-            {"YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED": True},
-            None,
-            skip_download=False,
-        )
-        self.assertIsNotNone(error)
-        self.assertIn("ffmpeg", error)
-
-        # 显式跳过下载时不拦截
-        self.assertIsNone(
-            require_ffmpeg(
-                {"YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED": True},
-                None,
-                skip_download=True,
-            )
-        )
-        # 未启用字幕下载时不拦截
-        self.assertIsNone(
-            require_ffmpeg(
-                {"YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED": False},
-                None,
-                skip_download=False,
-            )
-        )
 
 
 class YouTubeJsRuntimeOptionsTests(unittest.TestCase):

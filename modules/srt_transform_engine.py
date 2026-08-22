@@ -796,10 +796,80 @@ class SrtTransformEngine:
                 cue['end'] = float(cue.get('start', 0)) + 0.5
         return merged
 
+    def deduplicate_adjacent_overlap(
+        self,
+        cues: Sequence[Any],
+        *,
+        max_gap_s: float = 0.6,
+        min_overlap_words: int = 3,
+        overlap_ratio_threshold: float = 0.5,
+    ) -> List[Dict[str, Any]]:
+        """消除相邻字幕的"咬尾"重复（YouTube 滚动窗口特征）。
+
+        形态：下一条的开头若干词完整重复上一条的结尾，导致屏幕上连续两句
+        都说同一件事（如 "…you can't help but think" / "help but think, there must…"）。
+
+        策略（时间相邻才处理，信息无损）：
+        - 仅当下一条 start 与前一条 end 的 gap 不超过 max_gap_s 时考虑。
+        - 计算"下一条前缀词 == 上一条后缀词"的最长重叠长度及其占比。
+        - 若重叠词数 >= min_overlap_words 且占比 >= overlap_ratio_threshold，
+          则把下一条文本去掉这段重叠前缀，避免重复显示；去掉后若为空则并入/丢弃。
+        - 时间上明显分离（gap 大）的正当重复台词不会被合并。
+        """
+        import difflib
+        merged: List[Dict[str, Any]] = []
+        for raw_cue in self._coerce_cue_dicts(cues):
+            text = str(raw_cue.get('text') or '').strip()
+            if not text:
+                continue
+            cue = dict(raw_cue)
+            cue['text'] = text
+            if not merged:
+                merged.append(cue)
+                continue
+            prev = merged[-1]
+            prev_text = str(prev.get('text') or '').strip()
+            prev_start = float(prev.get('start', 0))
+            prev_end = float(prev.get('end', 0))
+            cue_start = float(cue.get('start', 0))
+            gap = cue_start - prev_end
+            if gap > max_gap_s:
+                merged.append(cue)
+                continue
+
+            # 词级切分
+            wa = prev_text.lower().split()
+            wb = text.lower().split()
+            if not wa or not wb:
+                merged.append(cue)
+                continue
+            maxk = min(len(wa), len(wb))
+            best = 0
+            for k in range(1, maxk + 1):
+                if wa[-k:] == wb[:k]:
+                    best = k
+            overlap_ratio = best / len(wb) if wb else 0.0
+            if best >= min_overlap_words and overlap_ratio >= overlap_ratio_threshold:
+                # 去掉下一条的重叠前缀
+                remainder_words = wb[best:]
+                remainder = ' '.join(remainder_words)
+                if not remainder:
+                    # 下一条被完全吞掉：并入上一条，时间取并集
+                    prev['end'] = max(prev_end, float(cue.get('end', 0)))
+                    continue
+                # 保留下一条，但文本去掉重复前缀（保留原大小写内容需重建）
+                rest_text = ' '.join(text.split()[best:])
+                cue['text'] = rest_text
+                merged.append(cue)
+            else:
+                merged.append(cue)
+        return merged
+
     def clean_srt_text(self, srt_text: str, base_offset_s: float = 0.0) -> str:
-        """解析 SRT 并合并渐进式重复后重新渲染为 SRT 文本。"""
+        """解析 SRT 并合并渐进式重复 + 相邻咬尾后重新渲染为 SRT 文本。"""
         cues = self.parse_srt(srt_text, base_offset_s=base_offset_s)
         cleaned = self.deduplicate_progressive_overlaps(cues)
+        cleaned = self.deduplicate_adjacent_overlap(cleaned)
         return self.render_srt(cleaned) or ''
 
     def _coerce_cue_dicts(self, cues: Sequence[Any]) -> List[Dict[str, Any]]:
