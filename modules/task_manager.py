@@ -1716,9 +1716,9 @@ def delete_task(task_id, delete_files=True):
     # 标记任务取消，尽快中断运行中的任务
     request_task_cancel(task_id)
 
-    # 删除任务文件
+    # 删除任务文件（等待线程退出后再删，避免运行中线程重建目录）
     if delete_files:
-        delete_task_files(task_id)
+        _delete_task_files_on_idle(task_id)
     
     # 删除任务记录
     conn = get_db_connection()
@@ -1750,8 +1750,18 @@ def clear_all_tasks(delete_files=True):
         request_task_cancel(task['id'])
 
     if delete_files:
+        active_ids = _get_active_task_ids()
         for task in tasks:
             delete_task_files(task['id'])
+        # 仍在运行的任务可能重建目录，安排后台兜底清理
+        for tid in active_ids:
+            if tid in _get_active_task_ids():
+                threading.Thread(
+                    target=_reap_task_files_after_cancel,
+                    args=(tid,),
+                    daemon=True,
+                    name=f'task-file-reaper-{str(tid)[:8]}',
+                ).start()
     
     # 清空任务表
     conn = get_db_connection()
@@ -2017,9 +2027,49 @@ def delete_task_files(task_id):
             logger.error(f"删除任务 {task_id} 的下载目录失败: {str(e)}")
             # 不直接返回False，尝试继续删除其他文件
 
+    # 删除任务日志文件（task_<id>.log）
+    if not task_id or '/' in task_id or '\\' in task_id:
+        logger.warning(f"跳过任务日志删除：非法 task_id {task_id!r}")
+    else:
+        log_path = os.path.join(LOGS_DIR, f'task_{task_id}.log')
+        if os.path.isfile(log_path):
+            try:
+                os.remove(log_path)
+                logger.info(f"任务 {task_id} 的日志文件已删除: {log_path}")
+            except Exception as e:
+                logger.error(f"删除任务 {task_id} 的日志文件失败: {str(e)}")
+
     # 封面图片现在保存在downloads目录中，无需单独删除
 
     return True
+
+
+def _delete_task_files_on_idle(task_id, wait_seconds=3.0):
+    """请求取消后等待任务线程退出再删除文件，避免目录被运行中的线程重建。
+
+    超过等待窗口时仍立即删除，并由后台线程在任务真正退出后兜底再清一次。
+    """
+    deadline = time.time() + float(wait_seconds)
+    while time.time() < deadline and task_id in _get_active_task_ids():
+        time.sleep(0.2)
+    still_active = task_id in _get_active_task_ids()
+    delete_task_files(task_id)
+    if still_active:
+        threading.Thread(
+            target=_reap_task_files_after_cancel,
+            args=(task_id,),
+            daemon=True,
+            name=f'task-file-reaper-{str(task_id)[:8]}',
+        ).start()
+
+
+def _reap_task_files_after_cancel(task_id):
+    """运行中任务被删除后：等线程彻底退出，再清理可能被重建的目录与日志。"""
+    while task_id in _get_active_task_ids():
+        time.sleep(1)
+    time.sleep(1)  # 让线程最后的落盘完成
+    delete_task_files(task_id)
+    logger.info(f"任务 {task_id} 的后台兜底清理已完成")
 
 # 全局上传队列锁
 upload_queue_lock = threading.Lock()

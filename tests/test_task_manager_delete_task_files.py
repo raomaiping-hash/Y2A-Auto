@@ -19,7 +19,7 @@ def _safe_join(base, *paths):
     return candidate_real
 
 
-def _load_delete_helpers(downloads_dir):
+def _load_delete_helpers(downloads_dir, logs_dir):
     task_manager_path = pathlib.Path(__file__).resolve().parents[1] / "modules" / "task_manager.py"
     source = task_manager_path.read_text(encoding="utf-8")
     module_ast = ast.parse(source, filename=str(task_manager_path))
@@ -38,6 +38,7 @@ def _load_delete_helpers(downloads_dir):
         'shutil': shutil,
         'safe_join': _safe_join,
         'DOWNLOADS_DIR': downloads_dir,
+        'LOGS_DIR': logs_dir,
         'logger': logger,
     }
     exec(compile(isolated_module, str(task_manager_path), 'exec'), namespace)
@@ -50,12 +51,14 @@ class DeleteTaskFilesTests(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         self.downloads_dir = os.path.join(self.tmpdir, 'downloads')
+        self.logs_dir = os.path.join(self.tmpdir, 'logs')
         os.makedirs(self.downloads_dir, exist_ok=True)
+        os.makedirs(self.logs_dir, exist_ok=True)
         (
             self._get_task_download_dir_real,
             self.delete_task_files,
             self.mock_logger,
-        ) = _load_delete_helpers(self.downloads_dir)
+        ) = _load_delete_helpers(self.downloads_dir, self.logs_dir)
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
@@ -74,11 +77,16 @@ class DeleteTaskFilesTests(unittest.TestCase):
         os.makedirs(task_dir, exist_ok=True)
         with open(os.path.join(task_dir, 'metadata.json'), 'w', encoding='utf-8') as fh:
             fh.write('{}')
+        log_path = os.path.join(self.logs_dir, f'task_{self.TASK_ID}.log')
+        with open(log_path, 'w', encoding='utf-8') as fh:
+            fh.write('log content')
 
         result = self.delete_task_files(self.TASK_ID)
 
         self.assertTrue(result)
         self.assertFalse(os.path.exists(task_dir))
+        # 任务日志文件也应一并删除
+        self.assertFalse(os.path.exists(log_path))
 
 
 if __name__ == '__main__':
