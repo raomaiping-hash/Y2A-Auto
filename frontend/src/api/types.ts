@@ -49,6 +49,8 @@ export interface Task {
   created_at?: string
   updated_at?: string
   can_retry_translation?: boolean
+  preview_available?: boolean
+  preview_kind?: 'embedded' | 'original' | 'none'
   [key: string]: unknown
 }
 

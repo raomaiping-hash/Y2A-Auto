@@ -418,6 +418,23 @@ def task_detail(task_id):
             tags_list = []
     task['tags_list'] = tags_list
 
+    # 本地成品视频预览信息
+    task['preview_available'] = False
+    task['preview_kind'] = 'none'
+    try:
+        task_dir_real = _app()._get_task_dir_real(task_id)
+        embedded = _app()._safe_join_task_dir(task_dir_real, 'video_with_subtitle.mp4')
+        original = _app()._safe_join_task_dir(task_dir_real, 'video.mp4')
+        if embedded and os.path.isfile(embedded):
+            task['preview_available'] = True
+            task['preview_kind'] = 'embedded'
+        elif original and os.path.isfile(original):
+            task['preview_available'] = True
+            task['preview_kind'] = 'original'
+    except (ValueError, OSError):
+        task['preview_available'] = False
+        task['preview_kind'] = 'none'
+
     return jsonify({
         'success': True,
         'task': task,
@@ -698,6 +715,40 @@ def task_cover(task_id):
         response.headers['Cache-Control'] = 'no-store'
         return response
     return _error('暂无封面', 404)
+
+
+@api_bp.get('/tasks/<task_id>/preview')
+@api_protected
+def task_video_preview(task_id):
+    """流式返回任务本地成品视频（支持 Range 拖动进度条）。
+
+    优先返回烧录翻译字幕的成品（video_with_subtitle.mp4），
+    否则返回原片（video.mp4），均严格限定在任务目录内。
+    """
+    task = get_task(task_id)
+    if not task:
+        return _error('任务不存在', 404)
+    try:
+        task_dir_real = _app()._get_task_dir_real(task_id)
+    except (ValueError, OSError):
+        return _error('任务目录无效', 404)
+
+    candidates = [
+        _app()._safe_join_task_dir(task_dir_real, 'video_with_subtitle.mp4'),
+        _app()._safe_join_task_dir(task_dir_real, 'video.mp4'),
+    ]
+    # 兜底：数据库记录的路径若仍在任务目录内也允许
+    stored_video = str(task.get('video_path_local') or '').strip()
+    if stored_video:
+        candidates.append(_app()._safe_join_task_dir(task_dir_real, os.path.basename(stored_video)))
+
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate):
+            mime_type, _ = mimetypes.guess_type(candidate)
+            response = send_file(candidate, mimetype=mime_type or 'video/mp4', conditional=True)
+            response.headers['Cache-Control'] = 'no-store'
+            return response
+    return _error('视频文件不存在', 404)
 
 
 @api_bp.post('/tasks/<task_id>/cover')

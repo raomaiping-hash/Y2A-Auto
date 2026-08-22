@@ -78,6 +78,7 @@ export const tasksApi = {
     api<ApiResponse>(`${V1}/tasks/${taskId}/cover/restore`, { method: 'POST' }),
   coverUrl: (taskId: string, cacheBust?: string) =>
     `${V1}/tasks/${taskId}/cover${cacheBust ? `?v=${encodeURIComponent(cacheBust)}` : ''}`,
+  previewUrl: (taskId: string) => `${V1}/tasks/${taskId}/preview`,
   log: (taskId: string) => api<{ content: string }>(`${V1}/tasks/${taskId}/log`),
 }
 

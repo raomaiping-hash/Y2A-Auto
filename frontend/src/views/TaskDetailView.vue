@@ -259,6 +259,18 @@ onBeforeUnmount(() => {
 
 const canStart = computed(() => ['pending', 'failed'].includes(task.value?.status ?? ''))
 const canForceUpload = computed(() => ['awaiting_manual_review', 'ready_for_upload', 'completed', 'failed'].includes(task.value?.status ?? ''))
+
+const previewKindText = computed(() => {
+  if (task.value?.preview_kind === 'embedded') return '成品（已烧录翻译字幕）'
+  if (task.value?.preview_kind === 'original') return '原片'
+  return '本地文件'
+})
+
+const previewBadgeClass = computed(() => {
+  if (task.value?.preview_kind === 'embedded') return 'badge-success'
+  if (task.value?.preview_kind === 'original') return 'badge-secondary'
+  return 'badge-secondary'
+})
 const canRetryTranslation = computed(() => !!task.value?.can_retry_translation)
 
 function formatTime(dt?: string): string {
@@ -387,6 +399,28 @@ function formatTime(dt?: string): string {
             </div>
           </div>
 
+          <!-- 成品视频预览 -->
+          <div class="card mt-4">
+            <div class="card-header">
+              <div class="card-title"><i class="bi bi-film"></i> 预览成品视频</div>
+              <span v-if="task?.preview_available" class="badge" :class="previewBadgeClass">
+                {{ previewKindText }}
+              </span>
+            </div>
+            <div class="card-body">
+              <video
+                v-if="task?.preview_available"
+                class="preview-video"
+                :src="tasksApi.previewUrl(task.id)"
+                controls
+                preload="metadata"
+              ></video>
+              <div v-else class="text-muted fs-sm">
+                本地视频文件尚未就绪（完成下载后即可预览；若已嵌入翻译字幕将显示成品版）。
+              </div>
+            </div>
+          </div>
+
           <!-- 处理日志 -->
           <div class="card mt-4">
             <div class="card-header">
@@ -492,6 +526,14 @@ function formatTime(dt?: string): string {
 </template>
 
 <style scoped>
+.preview-video {
+  display: block;
+  width: 100%;
+  max-height: 420px;
+  border-radius: var(--radius-md);
+  background: #000;
+  outline: none;
+}
 .page-header {
   display: flex;
   align-items: flex-end;

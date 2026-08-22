@@ -89,6 +89,13 @@ function askAbandon(task: Task) {
   abandonState.value = { open: true, task }
 }
 
+// ---- 成品视频预览 ----
+const previewState = ref<{ open: boolean; task: Task } | null>(null)
+
+function openPreview(task: Task) {
+  previewState.value = { open: true, task }
+}
+
 async function confirmAbandon() {
   if (!abandonState.value) return
   const { task } = abandonState.value
@@ -142,6 +149,9 @@ const reviewCount = computed(() => tasks.value.length)
             <TaskStatusBadge :status="task.status" />
           </div>
           <div class="flex gap-2">
+            <button class="btn btn-ghost btn-sm" title="预览本地成品视频" @click="openPreview(task)">
+              <i class="bi bi-play-circle"></i> 预览
+            </button>
             <button v-if="task.can_retry_translation" class="btn btn-secondary btn-sm" @click="askRetry(task)">
               <i class="bi bi-translate"></i> 重试翻译
             </button>
@@ -206,10 +216,34 @@ const reviewCount = computed(() => tasks.value.length)
         </button>
       </template>
     </UiModal>
+
+    <!-- 成品视频预览 -->
+    <UiModal
+      :open="previewState?.open ?? false"
+      :title="previewState ? `预览：${taskTitle(previewState.task)}` : '预览'"
+      size="lg"
+      @close="previewState = null"
+    >
+      <video
+        v-if="previewState"
+        class="preview-video"
+        :src="tasksApi.previewUrl(previewState.task.id)"
+        controls
+        preload="metadata"
+      ></video>
+    </UiModal>
   </div>
 </template>
 
 <style scoped>
+.preview-video {
+  display: block;
+  width: 100%;
+  max-height: 420px;
+  border-radius: var(--radius-md);
+  background: #000;
+  outline: none;
+}
 .abandon-text {
   margin: 0 0 var(--sp-3);
   font-size: var(--fs-md);
