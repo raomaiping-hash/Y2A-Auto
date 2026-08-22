@@ -6250,7 +6250,20 @@ class TaskProcessor:
             from .ffmpeg_manager import get_ffmpeg_path
             ffmpeg_bin = get_ffmpeg_path(logger=task_logger)
             out_mp4 = os.path.join(task_dir, 'video_dubbed.mp4')
-            mux_dubbed_video(video_path, dubbed_audio, out_mp4, ffmpeg_bin, task_logger)
+            # 输入不能与输出同名：video_path 可能是上一轮配音的 video_dubbed.mp4
+            mux_input = video_path
+            if os.path.basename(video_path) == 'video_dubbed.mp4':
+                mux_input = next(
+                    (p for p in (
+                        os.path.join(task_dir, 'video_with_subtitle.mp4'),
+                        os.path.join(task_dir, 'video.mp4'),
+                    ) if os.path.isfile(p)),
+                    video_path,
+                )
+                if mux_input == video_path:
+                    task_logger.warning("未找到可作为配音输入的基础视频，保留原音频")
+                    return True
+            mux_dubbed_video(mux_input, dubbed_audio, out_mp4, ffmpeg_bin, task_logger)
             if not os.path.isfile(out_mp4):
                 task_logger.warning("配音视频封装失败，保留原音频")
                 return True
