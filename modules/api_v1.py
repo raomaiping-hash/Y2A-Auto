@@ -608,12 +608,19 @@ def task_dub(task_id):
     logger = setup_task_logger(task_id)
     update_task(task_id, status='dubbing_audio')
 
-    from .task_manager import get_global_task_processor
+    from .task_manager import get_global_task_processor, setup_task_logger, update_task
     processor = get_global_task_processor(config)
 
+    def _dub_worker():
+        try:
+            processor._maybe_dub_audio(task_id, logger)
+        finally:
+            current = get_task(task_id)
+            if current and current.get('status') == 'dubbing_audio':
+                update_task(task_id, status=TASK_STATES['READY_FOR_UPLOAD'])
+
     threading.Thread(
-        target=processor._maybe_dub_audio,
-        args=(task_id, logger),
+        target=_dub_worker,
         daemon=True,
         name=f'task-dub-{task_id[:8]}',
     ).start()
