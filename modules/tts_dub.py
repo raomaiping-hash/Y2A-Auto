@@ -263,7 +263,12 @@ def copy_file(src: str, dst: str) -> None:
 
 
 def mix_tracks(base_wav: str, overlay_wavs: List[str], out_wav: str, ffmpeg: str, logger: logging.Logger) -> None:
-    """叠加多条已定位轨道到基底上（amix，归一化 + 动态响度）。"""
+    """叠加多条已定位轨道到基底上。
+
+    注意：amix 必须用 normalize=0（求和模式）——默认的 normalize=1 会把
+    每条输入除以输入总数，几百条 cue 叠加后整体趋近静音。
+    求和后用 alimiter 防止偶发重叠导致的削波。
+    """
     if not overlay_wavs:
         copy_file(base_wav, out_wav)
         return
@@ -272,14 +277,10 @@ def mix_tracks(base_wav: str, overlay_wavs: List[str], out_wav: str, ffmpeg: str
     for w in overlay_wavs:
         inputs += ['-i', w]
     cmd += inputs
-    filter_complex = ';'.join(
-        [f'[{i}:a]volume=1.0[a{i}]' for i in range(len(overlay_wavs))]
-    )
-    # 所有 overlay 与 base 混合
-    mix_inputs = ''.join(f'[a{i}]' for i in range(len(overlay_wavs)))
+    mix_inputs = ''.join(f'[{i}:a]' for i in range(len(overlay_wavs)))
+    filter_complex = f'[0:a]{mix_inputs}amix=inputs={len(overlay_wavs) + 1}:duration=longest:normalize=0,alimiter=limit=0.95:level=0[aout]'
     cmd += [
-        '-filter_complex',
-        f'{filter_complex};[0:a]{mix_inputs}amix=inputs={len(overlay_wavs) + 1}:duration=longest:normalize=1[aout]',
+        '-filter_complex', filter_complex,
         '-map', '[aout]', '-ar', '44100', '-ac', '2', '-c:a', 'pcm_s16le', out_wav,
     ]
     _run(cmd, logger)
