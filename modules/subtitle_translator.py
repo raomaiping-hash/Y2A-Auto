@@ -308,19 +308,43 @@ class SubtitleWriter:
 
     @staticmethod
     def _strip_terminal_full_stop(text: str) -> str:
-        """移除每行结尾的句号/英文句点，保留其他标点。"""
+        """移除标点符号，保留空格/换行（字幕无需标点，利于短行显示）。"""
         if not text:
             return text
+        import re
+        # CJK 与 ASCII 常见标点全部去掉；保留词内连字符(如 3D / T-shirt)以免破坏词义
+        text = re.sub(r'[，。！？；：、、…—·“”‘’（）《》〈〉【】\[\]{}<>"\'`]', ' ', str(text))
+        text = re.sub(r'[,.!?;:()]', ' ', text)
+        text = re.sub(r'[ \t]+', ' ', text)
+        text = re.sub(r' *\n *', '\n', text)
+        return text.strip()
 
-        normalized_lines: List[str] = []
-        for raw_line in str(text).split('\n'):
-            line = raw_line.rstrip()
-            if line.endswith('。'):
-                line = line[:-1].rstrip()
-            elif line.endswith('.') and not line.endswith('..'):
-                line = line[:-1].rstrip()
-            normalized_lines.append(line)
-        return '\n'.join(normalized_lines)
+    @staticmethod
+    def _wrap_to_max_lines(text: str, max_chars: int = 21, max_lines: int = 2) -> str:
+        """把长文本按自然断点折行，限制行数与每行字数（字幕短行显示更佳）。"""
+        if not text or len(text) <= max_chars * max_lines:
+            return text
+        words = str(text).split()
+        lines: List[str] = []
+        current = ''
+        for word in words:
+            candidate = (current + ' ' + word).strip()
+            if len(current) and len(candidate) > max_chars:
+                lines.append(current)
+                current = word
+            else:
+                current = candidate
+        if current:
+            lines.append(current)
+        if len(lines) > max_lines:
+            lines = lines[:max_lines]
+            lines[-1] = lines[-1][:max_chars].rstrip() + '…'
+        return '\n'.join(lines)
+
+    @staticmethod
+    def _clean_subtitle_text(text: str) -> str:
+        """翻译文本的最终清洗：去标点 + 折行限宽。"""
+        return SubtitleWriter._wrap_to_max_lines(SubtitleWriter._strip_terminal_full_stop(text))
 
     @staticmethod
     def write_srt(items: List[SubtitleItem], output_path: str, translated: bool = True):
@@ -330,7 +354,7 @@ class SubtitleWriter:
                 for item in items:
                     text = item.translated_text if translated and item.translated_text else item.source_text
                     if translated:
-                        text = SubtitleWriter._strip_terminal_full_stop(text)
+                        text = SubtitleWriter._clean_subtitle_text(text)
                     f.write(f"{item.index}\n")
                     f.write(f"{item.time_range}\n")
                     f.write(f"{text}\n\n")
@@ -347,7 +371,7 @@ class SubtitleWriter:
                 for item in items:
                     text = item.translated_text if translated and item.translated_text else item.source_text
                     if translated:
-                        text = SubtitleWriter._strip_terminal_full_stop(text)
+                        text = SubtitleWriter._clean_subtitle_text(text)
                     start_time = item.start_time.replace(',', '.')
                     end_time = item.end_time.replace(',', '.')
                     f.write(f"{start_time} --> {end_time}\n")
