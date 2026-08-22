@@ -66,3 +66,6 @@ tests/*
 .uv-cache/
 .uv-python/
 build-tools/Y2A-Auto.spec
+
+# TTS 配音分离模型缓存
+models/audio_separator/

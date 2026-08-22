@@ -1650,6 +1650,7 @@ def system_health():
             'ffprobe': {'status': 'unknown', 'path': None},
             'vad': {'status': 'unknown', 'message': ''},
             'asr': {'status': 'unknown', 'message': ''},
+            'tts': {'status': 'unknown', 'message': ''},
             'disk': {'status': 'unknown', 'free_gb': None},
         },
         'docker_volumes': {}
@@ -1699,8 +1700,22 @@ def system_health():
             health_status['runtime_tools']['asr'] = {'status': 'warn', 'message': '已配置端点但缺少 API Key'}
         else:
             health_status['runtime_tools']['asr'] = {'status': 'disabled', 'message': '未配置语音识别'}
+
+        tts_enabled = bool(_health_config.get('TTS_DUB_ENABLED', False))
+        tts_key = bool(str(_health_config.get('TTS_DUB_API_KEY') or '').strip())
+        tts_model = str(_health_config.get('TTS_DUB_MODEL') or '').strip()
+        if tts_enabled and tts_key:
+            health_status['runtime_tools']['tts'] = {
+                'status': 'ok',
+                'message': f'{tts_model} @ {str(_health_config.get("TTS_DUB_BASE_URL") or "")[:40]}',
+            }
+        elif tts_enabled and not tts_key:
+            health_status['runtime_tools']['tts'] = {'status': 'warn', 'message': '已启用配音但缺少 API Key'}
+        else:
+            health_status['runtime_tools']['tts'] = {'status': 'disabled', 'message': '未启用配音'}
     except Exception:
         health_status['runtime_tools']['asr'] = {'status': 'error', 'message': ''}
+        health_status['runtime_tools']['tts'] = {'status': 'error', 'message': ''}
 
     try:
         import shutil

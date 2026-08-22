@@ -160,6 +160,19 @@ DEFAULT_CONFIG = {
     # 语音识别（无字幕转写）
     "SPEECH_RECOGNITION_ENABLED": False,  # 启用语音识别生成字幕
     "SPEECH_RECOGNITION_PROVIDER": "whisper",  # whisper（OpenAI兼容）
+    # TTS 配音（fish.audio：翻译字幕 → 语音替换原声，保留背景音）
+    "TTS_DUB_ENABLED": False,  # 是否启用配音
+    "TTS_DUB_API_KEY": "",
+    "TTS_DUB_BASE_URL": "https://api.fish.audio",
+    "TTS_DUB_MODEL": "s2.1-pro-free",  # s2.1-pro-free 免费档 / s2.1-pro 生产档
+    "TTS_DUB_REFERENCE_MODE": "auto",  # auto=零样本克隆原声 / voice_id=固定声音 / none=默认音色
+    "TTS_DUB_VOICE_ID": "",  # 预建声音模型 ID（reference_id）
+    "TTS_DUB_SPEED": 1.0,  # 语速 0.5-2.0
+    "TTS_DUB_BACKGROUND_MODE": "separate",  # separate=分离伴奏 / duck=压低原声
+    "TTS_DUB_SEPARATION_MODEL": "UVR_MDXNET_KARA_2.onnx",  # 分离模型文件名（audio-separator）
+    "TTS_DUB_MAX_DURATION_MINUTES": 20,  # 超过该时长自动转压低模式（保护 CPU）
+    "TTS_DUB_MAX_RETRIES": 3,
+    "TTS_DUB_RETRY_DELAY": 2,
     # Whisper/OpenAI 兼容配置（可单独配置，未设置则回退到 OPENAI_*）
     "WHISPER_API_KEY": "",
     "WHISPER_BASE_URL": "",

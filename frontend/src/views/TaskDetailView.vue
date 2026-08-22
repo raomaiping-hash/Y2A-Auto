@@ -261,12 +261,14 @@ const canStart = computed(() => ['pending', 'failed'].includes(task.value?.statu
 const canForceUpload = computed(() => ['awaiting_manual_review', 'ready_for_upload', 'completed', 'failed'].includes(task.value?.status ?? ''))
 
 const previewKindText = computed(() => {
+  if (task.value?.preview_kind === 'dubbed') return '成品·配音'
   if (task.value?.preview_kind === 'embedded') return '成品（已烧录翻译字幕）'
   if (task.value?.preview_kind === 'original') return '原片'
   return '本地文件'
 })
 
 const previewBadgeClass = computed(() => {
+  if (task.value?.preview_kind === 'dubbed') return 'badge-success'
   if (task.value?.preview_kind === 'embedded') return 'badge-success'
   if (task.value?.preview_kind === 'original') return 'badge-secondary'
   return 'badge-secondary'

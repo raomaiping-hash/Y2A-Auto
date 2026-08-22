@@ -161,6 +161,17 @@ const SECTIONS: SectionDef[] = [
       { key: 'WHISPER_TRANSLATE', label: '转写时翻译为英文', type: 'toggle' },
       { key: 'WHISPER_MAX_RETRIES', label: '转写重试次数', type: 'number' },
       { key: 'WHISPER_RETRY_DELAY_S', label: '重试延迟（秒）', type: 'number', step: '0.5' },
+      { key: 'TTS_DUB_ENABLED', label: '启用配音（替换原声）', type: 'toggle', hint: '用翻译后字幕合成为语音替换原声，背景音保持不变' },
+      { key: 'TTS_DUB_API_KEY', label: 'Fish Audio API Key', type: 'password', sensitive: true },
+      { key: 'TTS_DUB_BASE_URL', label: 'Fish Audio 地址', type: 'text', hint: '默认 https://api.fish.audio' },
+      { key: 'TTS_DUB_MODEL', label: 'TTS 模型', type: 'text', placeholder: 's2.1-pro-free' },
+      { key: 'TTS_DUB_REFERENCE_MODE', label: '声音来源', type: 'select', options: [{ value: 'auto', label: '自动克隆原说话人' }, { value: 'voice_id', label: '固定声音 ID' }, { value: 'none', label: '默认音色' }] },
+      { key: 'TTS_DUB_VOICE_ID', label: '声音 ID（reference_id）', type: 'text', hint: '预建克隆模型 ID；声音来源选固定时生效' },
+      { key: 'TTS_DUB_SPEED', label: '语速', type: 'number', step: '0.1', hint: '0.5–2.0，超窗自动加速适配' },
+      { key: 'TTS_DUB_BACKGROUND_MODE', label: '背景处理', type: 'select', options: [{ value: 'separate', label: '分离伴奏（推荐，保持背景音）' }, { value: 'duck', label: '压低原声（更快，保留部分原声）' }] },
+      { key: 'TTS_DUB_MAX_DURATION_MINUTES', label: '分离上限（分钟）', type: 'number', hint: '超过自动转压低模式（保护 CPU）' },
+      { key: 'TTS_DUB_MAX_RETRIES', label: '合成重试次数', type: 'number' },
+      { key: 'TTS_DUB_RETRY_DELAY', label: '重试延迟（秒）', type: 'number' },
       { key: 'VOXTRAL_API_KEY', label: 'Voxtral API Key', type: 'password', sensitive: true },
       { key: 'VOXTRAL_BASE_URL', label: 'Voxtral 地址', type: 'text' },
       { key: 'VOXTRAL_MODEL_NAME', label: 'Voxtral 模型', type: 'text' },
@@ -547,6 +558,21 @@ async function testNotify(channel: string) {
   }
 }
 
+/* ---- TTS 合成测试 ---- */
+const ttsTestBusy = ref(false)
+async function testTts() {
+  ttsTestBusy.value = true
+  try {
+    const res = await settingsApi.ttsTest('这是一段语音合成测试。')
+    if (res.success) toast.success(res.message)
+    else toast.error('合成失败', res.message)
+  } catch (e) {
+    toast.error('合成失败', e instanceof ApiError ? e.message : '请稍后重试')
+  } finally {
+    ttsTestBusy.value = false
+  }
+}
+
 /* ---- TG Bot Token ---- */
 const tgBusy = ref(false)
 async function tgAction(action: 'generate' | 'revoke') {
@@ -865,6 +891,17 @@ function onSettingsScroll() {
                     <i class="bi bi-clock-history"></i>
                     <span>上次同步：{{ cookiecloudStatus.at }} · {{ cookiecloudStatus.message }}</span>
                   </div>
+                </div>
+              </div>
+
+              <!-- 语音识别附加：TTS 合成测试 -->
+              <div v-if="section.id === 'speech'" class="field field-full">
+                <span class="field-label">测试语音合成（Fish Audio）</span>
+                <div class="flex gap-2 flex-wrap">
+                  <button class="btn btn-secondary btn-sm" :disabled="ttsTestBusy" @click="testTts">
+                    <span v-if="ttsTestBusy" class="spinner spinner-sm"></span>
+                    <i v-else class="bi bi-soundwave"></i> 合成测试
+                  </button>
                 </div>
               </div>
 

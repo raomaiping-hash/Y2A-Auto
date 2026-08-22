@@ -50,7 +50,7 @@ export interface Task {
   updated_at?: string
   can_retry_translation?: boolean
   preview_available?: boolean
-  preview_kind?: 'embedded' | 'original' | 'none'
+  preview_kind?: 'dubbed' | 'embedded' | 'original' | 'none'
   [key: string]: unknown
 }
 
@@ -93,6 +93,7 @@ export interface SystemHealthPayload {
     ffprobe?: RuntimeToolStatus
     vad?: RuntimeToolStatus
     asr?: RuntimeToolStatus
+    tts?: RuntimeToolStatus
     disk?: RuntimeToolStatus
   }
   [key: string]: unknown

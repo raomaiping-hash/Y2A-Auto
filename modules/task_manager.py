@@ -338,6 +338,7 @@ TASK_STATES = {
     'DOWNLOADED': 'downloaded',           # 下载完成
     'ASR_TRANSCRIBING': 'asr_transcribing',  # 语音转写中
     'TRANSLATING_SUBTITLE': 'translating_subtitle',  # 正在翻译字幕
+    'DUBBING_AUDIO': 'dubbing_audio',     # 正在 TTS 配音（替换原声）
     'ENCODING_VIDEO': 'encoding_video',   # 正在转码视频
     'TRANSLATING': 'translating',         # 正在翻译
     'TAGGING': 'tagging',                 # 正在生成标签
@@ -378,6 +379,7 @@ PIPELINE_STAGE_RECOMMEND_PARTITION = 'recommend_partition'
 PIPELINE_STAGE_MODERATE_CONTENT = 'moderate_content'
 PIPELINE_STAGE_DOWNLOAD_VIDEO = 'download_video'
 PIPELINE_STAGE_TRANSLATE_SUBTITLE = 'translate_subtitle'
+PIPELINE_STAGE_DUB_AUDIO = 'dub_audio'
 PIPELINE_STAGE_UPLOAD_TO_ACFUN = 'upload_to_acfun'
 
 PIPELINE_STAGE_ORDER = [
@@ -388,6 +390,7 @@ PIPELINE_STAGE_ORDER = [
     PIPELINE_STAGE_MODERATE_CONTENT,
     PIPELINE_STAGE_DOWNLOAD_VIDEO,
     PIPELINE_STAGE_TRANSLATE_SUBTITLE,
+    PIPELINE_STAGE_DUB_AUDIO,
     PIPELINE_STAGE_UPLOAD_TO_ACFUN,
 ]
 
@@ -2660,6 +2663,19 @@ class TaskProcessor:
                     if task is not None and task['status'] == TASK_STATES['FAILED']:
                         task_logger.error("字幕处理失败，继续执行后续步骤")
                 _raise_if_cancelled(task_id, task_logger)
+
+            # 5.5 TTS 配音（翻译字幕 → 语音替换原声，保留背景音）
+            if _as_bool(self.config.get('TTS_DUB_ENABLED', False)):
+                task = get_task(task_id)
+                if task and task.get('status') == TASK_STATES['FAILED']:
+                    task_logger.warning("任务已失败，跳过配音")
+                elif PIPELINE_STAGE_DUB_AUDIO in completed_stages:
+                    task_logger.info("跳过配音（checkpoint已完成）")
+                else:
+                    ok = self._maybe_dub_audio(task_id, task_logger)
+                    if ok:
+                        completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_DUB_AUDIO)
+                    _raise_if_cancelled(task_id, task_logger)
 
             # 6. 上传
             if self.config.get('AUTO_MODE_ENABLED', False):
@@ -6132,6 +6148,67 @@ class TaskProcessor:
         except Exception as e:
             task_logger.error(f"SRT/VTT转ASS转换失败: {str(e)}")
             return False
+
+    def _maybe_dub_audio(self, task_id, task_logger):
+        """TTS 配音：翻译后字幕合成语音替换原声，保留背景音。
+
+        任何失败都降级为保留原音频（不影响任务最终状态），
+        成功则将 video_path_local 指向 video_dubbed.mp4。
+        """
+        from .tts_dub import TtsDubError, build_dubbed_audio, mux_dubbed_video  # 惰性导入
+
+        task = get_task(task_id)
+        if not task:
+            task_logger.error("任务不存在，跳过配音")
+            return True
+        video_path = str(task.get('video_path_local') or '').strip()
+        translated_srt = str(task.get('subtitle_path_translated') or '').strip()
+        original_srt = str(task.get('subtitle_path_original') or '').strip()
+        if not video_path or not os.path.isfile(video_path):
+            task_logger.warning("视频文件不存在，跳过配音")
+            return True
+        if not translated_srt or not os.path.isfile(translated_srt):
+            task_logger.warning("无翻译后字幕文件，跳过配音")
+            return True
+
+        update_task(task_id, status=TASK_STATES['DUBBING_AUDIO'])
+        task_dir = os.path.dirname(video_path)
+
+        dubbed_audio, warnings = build_dubbed_audio(
+            task_dir,
+            video_path,
+            translated_srt,
+            original_srt if os.path.isfile(original_srt) else None,
+            self.config,
+            task_logger,
+        )
+        for warning in warnings:
+            task_logger.warning(warning)
+
+        if not dubbed_audio or not os.path.isfile(dubbed_audio):
+            task_logger.warning("配音未完成，保留原音频继续")
+            # 恢复为字幕阶段后的状态由主流程后续步骤处理
+            return True
+
+        try:
+            from .ffmpeg_manager import get_ffmpeg_path
+            ffmpeg_bin = get_ffmpeg_path(logger=task_logger)
+            out_mp4 = os.path.join(task_dir, 'video_dubbed.mp4')
+            mux_dubbed_video(video_path, dubbed_audio, out_mp4, ffmpeg_bin, task_logger)
+            if not os.path.isfile(out_mp4):
+                task_logger.warning("配音视频封装失败，保留原音频")
+                return True
+            # 清理中间产物（保留最终成片）
+            shutil.rmtree(os.path.join(task_dir, '_dub_tmp'), ignore_errors=True)
+            update_task(task_id, video_path_local=out_mp4)
+            task_logger.info("配音完成：%s", out_mp4)
+            return True
+        except TtsDubError as exc:
+            task_logger.warning("配音封装失败，保留原音频：%s", exc)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            task_logger.warning("配音封装异常，保留原音频：%s", str(exc)[:200])
+            return True
 
     def _embed_subtitle_in_video(self, task_id, video_path, subtitle_path, task_logger):
         """使用FFmpeg将字幕嵌入视频（修复版本 - 添加超时机制）"""

@@ -15,6 +15,8 @@ import logging
 import mimetypes
 import os
 import secrets
+import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -423,11 +425,13 @@ def task_detail(task_id):
     task['preview_kind'] = 'none'
     try:
         task_dir_real = _app()._get_task_dir_real(task_id)
-        embedded = _app()._safe_join_task_dir(task_dir_real, 'video_with_subtitle.mp4')
+        embedded = _app()._safe_join_task_dir(task_dir_real, 'video_dubbed.mp4')
+        if not (embedded and os.path.isfile(embedded)):
+            embedded = _app()._safe_join_task_dir(task_dir_real, 'video_with_subtitle.mp4')
         original = _app()._safe_join_task_dir(task_dir_real, 'video.mp4')
         if embedded and os.path.isfile(embedded):
             task['preview_available'] = True
-            task['preview_kind'] = 'embedded'
+            task['preview_kind'] = 'dubbed' if os.path.basename(embedded) == 'video_dubbed.mp4' else 'embedded'
         elif original and os.path.isfile(original):
             task['preview_available'] = True
             task['preview_kind'] = 'original'
@@ -734,6 +738,7 @@ def task_video_preview(task_id):
         return _error('任务目录无效', 404)
 
     candidates = [
+        _app()._safe_join_task_dir(task_dir_real, 'video_dubbed.mp4'),
         _app()._safe_join_task_dir(task_dir_real, 'video_with_subtitle.mp4'),
         _app()._safe_join_task_dir(task_dir_real, 'video.mp4'),
     ]
@@ -974,6 +979,57 @@ def settings_tgbot_token():
             'state': _app()._tgbot_api_token_state(updated_config),
         })
     return _error('未知的 Token 操作。')
+
+
+@api_bp.post('/settings/tts/test')
+@api_protected
+def settings_test_tts():
+    """合成一小段语音验证 fish.audio 配置（真实调用，返回时长）。"""
+    payload = request.get_json(silent=True) or {}
+    text = str(payload.get('text') or '').strip() or '这是一段语音合成测试。'
+    config = load_config()
+    api_key = str(config.get('TTS_DUB_API_KEY') or '').strip()
+    if not api_key:
+        return _error('未配置 TTS_DUB_API_KEY（语音配音分组）', 400)
+    try:
+        from .tts_dub import FishAudioTtsClient
+        client = FishAudioTtsClient(
+            api_key=api_key,
+            base_url=str(config.get('TTS_DUB_BASE_URL') or 'https://api.fish.audio'),
+            model=str(config.get('TTS_DUB_MODEL') or 's2.1-pro-free'),
+            max_retries=int(config.get('TTS_DUB_MAX_RETRIES') or 1),
+            retry_delay_s=0,
+        )
+        audio = client.synthesize(text, speed=float(config.get('TTS_DUB_SPEED') or 1.0))
+        duration_ms = 0
+        with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp:
+            tmp.write(audio)
+            tmp_path = tmp.name
+        try:
+            from .ffmpeg_manager import get_ffprobe_path, get_ffmpeg_path
+            ffmpeg = get_ffmpeg_path()
+            if ffmpeg and os.path.exists(ffmpeg):
+                ffprobe = get_ffprobe_path(ffmpeg_path=ffmpeg)
+                if ffprobe:
+                    out = subprocess.run(
+                        [ffprobe, '-v', 'error', '-show_entries', 'format=duration',
+                         '-of', 'default=noprint_wrappers=1:nokey=1', tmp_path],
+                        capture_output=True, text=True, timeout=60,
+                    )
+                    duration_ms = int(float(str(out.stdout or '').strip() or 0) * 1000)
+        finally:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+        return jsonify({
+            'success': True,
+            'message': f'合成成功（{duration_ms}ms）',
+            'duration_ms': duration_ms,
+            'model': str(config.get('TTS_DUB_MODEL') or ''),
+        })
+    except Exception as exc:
+        return _error(f'合成测试失败: {str(exc)[:200]}', 502)
 
 
 @api_bp.post('/settings/notifications/test')

@@ -44,6 +44,7 @@ const healthItems = computed(() => {
   if (tools.ffmpeg) items.push({ label: 'FFmpeg', status: tools.ffmpeg.status ?? 'unknown', text: tools.ffmpeg.path ? '已就绪' : '未安装' })
   if (tools.vad) items.push({ label: 'VAD 语音分段', status: tools.vad.status ?? 'unknown', text: tools.vad.message ?? '' })
   if (tools.asr) items.push({ label: '语音识别', status: tools.asr.status ?? 'unknown', text: tools.asr.message ?? '' })
+  if (tools.tts) items.push({ label: 'TTS 配音', status: tools.tts.status ?? 'unknown', text: tools.tts.message ?? '' })
   if (tools.disk) items.push({ label: '磁盘剩余', status: tools.disk.status ?? 'unknown', text: `${tools.disk.free_gb ?? '?'} GB` })
   return items
 })

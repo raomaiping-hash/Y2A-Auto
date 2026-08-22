@@ -102,6 +102,8 @@ export const settingsApi = {
     }),
   testNotification: (channel: string) =>
     api<ApiResponse>(`${V1}/settings/notifications/test`, { method: 'POST', body: { channel } }),
+  ttsTest: (text: string) =>
+    api<ApiResponse & { duration_ms?: number; model?: string }>(`${V1}/settings/tts/test`, { method: 'POST', body: { text } }),
   testCookiecloud: () =>
     api<ApiResponse>(`${V1}/settings/cookiecloud/test`, { method: 'POST' }),
   syncCookiecloud: () =>
