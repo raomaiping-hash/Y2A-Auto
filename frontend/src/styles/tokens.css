@@ -1,17 +1,26 @@
 /* ============================================================
    Y2A-Auto 设计系统 · Design Tokens
-   现代深色仪表盘主题。全部颜色/间距/圆角/字号均从这里取值，
+   深色（默认）+ 浅色双主题。全部颜色/间距/圆角/字号均从这里取值，
    组件样式只消费变量，不写死具体色值。
+   主题切换：document.documentElement.dataset.theme = 'dark' | 'light'
    ============================================================ */
 
-:root {
+:root,
+[data-theme='dark'] {
+  color-scheme: dark;
+
   /* ---- 基础画布层次 ---- */
   --bg-canvas: #0a0e15;          /* 页面最底层背景 */
   --bg-surface: #0f141d;         /* 卡片 / 面板 */
   --bg-raised: #151c28;          /* 悬浮层 / 输入框 */
   --bg-overlay: #1a2230;         /* 弹层 / 下拉 */
+  --bg-sidebar: #0c111a;         /* 侧边栏 */
+  --bg-topbar: rgba(10, 14, 21, 0.82); /* 顶栏（毛玻璃） */
   --bg-hover: rgba(255, 255, 255, 0.045);
   --bg-active: rgba(255, 255, 255, 0.08);
+  --scrim: rgba(4, 7, 12, 0.68); /* 遮罩层 */
+  --scrollbar-thumb: rgba(255, 255, 255, 0.12);
+  --bg-code: #0b0f16;            /* 代码块（双主题保持深色终端感） */
 
   /* ---- 边框 ---- */
   --border-subtle: rgba(255, 255, 255, 0.06);
@@ -106,4 +115,67 @@
   --status-info: var(--info);
   --status-primary: var(--accent);
   --status-secondary: var(--text-muted);
+}
+
+/* ============================================================
+   浅色主题（[data-theme='light']）
+   仅覆盖颜色类令牌；字体/间距/圆角/布局沿用 ：root
+   ============================================================ */
+
+[data-theme='light'] {
+  color-scheme: light;
+
+  /* ---- 基础画布层次 ---- */
+  --bg-canvas: #f2f4f8;
+  --bg-surface: #ffffff;
+  --bg-raised: #ffffff;
+  --bg-overlay: #ffffff;
+  --bg-sidebar: #ffffff;
+  --bg-topbar: rgba(255, 255, 255, 0.85);
+  --bg-hover: rgba(15, 23, 42, 0.045);
+  --bg-active: rgba(15, 23, 42, 0.09);
+  --scrim: rgba(15, 23, 42, 0.45);
+  --scrollbar-thumb: rgba(15, 23, 42, 0.22);
+  --bg-code: #f6f8fb;
+
+  /* ---- 边框 ---- */
+  --border-subtle: rgba(15, 23, 42, 0.07);
+  --border-default: rgba(15, 23, 42, 0.13);
+  --border-strong: rgba(15, 23, 42, 0.24);
+
+  /* ---- 文本 ---- */
+  --text-primary: #17202e;
+  --text-secondary: #4a5568;
+  --text-muted: #8592a6;
+  --text-inverse: #ffffff;
+
+  /* ---- 主色（加深以保证白底对比度） ---- */
+  --accent: #4a6cf7;
+  --accent-strong: #3557e8;
+  --accent-soft: rgba(74, 108, 247, 0.1);
+  --accent-border: rgba(74, 108, 247, 0.35);
+  --accent-glow: rgba(74, 108, 247, 0.22);
+  --accent-gradient: linear-gradient(135deg, #4a6cf7 0%, #8b5cf6 100%);
+
+  /* ---- 语义色（加深以适配浅底） ---- */
+  --success: #16a34a;
+  --success-soft: rgba(22, 163, 74, 0.1);
+  --success-border: rgba(22, 163, 74, 0.32);
+  --warning: #b45309;
+  --warning-soft: rgba(217, 119, 6, 0.12);
+  --warning-border: rgba(217, 119, 6, 0.35);
+  --danger: #dc2626;
+  --danger-soft: rgba(220, 38, 38, 0.08);
+  --danger-border: rgba(220, 38, 38, 0.3);
+  --info: #0369a1;
+  --info-soft: rgba(2, 132, 199, 0.09);
+  --info-border: rgba(2, 132, 199, 0.3);
+  --purple: #7c3aed;
+  --cyan: #0891b2;
+  --pink: #db2777;
+
+  /* ---- 阴影（降低不透明度） ---- */
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.05), 0 6px 20px rgba(15, 23, 42, 0.06);
+  --shadow-pop: 0 4px 12px rgba(15, 23, 42, 0.1), 0 16px 48px rgba(15, 23, 42, 0.16);
 }

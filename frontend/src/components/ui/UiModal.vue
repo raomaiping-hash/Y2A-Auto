@@ -67,7 +67,7 @@ const sizeClass = computed(() => `ui-modal--${props.size}`)
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: rgba(4, 7, 12, 0.68);
+  background: var(--scrim);
   backdrop-filter: blur(4px);
 }
 .ui-modal {

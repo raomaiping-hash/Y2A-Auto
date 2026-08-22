@@ -67,7 +67,7 @@
   color: var(--danger);
 }
 .btn-danger:hover:not(:disabled) {
-  background: rgba(242, 112, 122, 0.22);
+  background: color-mix(in srgb, var(--danger) 22%, transparent);
 }
 .btn-danger-solid {
   background: var(--danger);
@@ -83,7 +83,7 @@
   color: var(--success);
 }
 .btn-success:hover:not(:disabled) {
-  background: rgba(62, 207, 142, 0.22);
+  background: color-mix(in srgb, var(--success) 22%, transparent);
 }
 
 .btn-warning {
@@ -92,7 +92,7 @@
   color: var(--warning);
 }
 .btn-warning:hover:not(:disabled) {
-  background: rgba(242, 184, 75, 0.22);
+  background: color-mix(in srgb, var(--warning) 22%, transparent);
 }
 
 .btn-sm {
@@ -369,7 +369,7 @@
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.06), transparent);
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--text-primary) 6%, transparent), transparent);
   animation: skeleton-wave 1.4s var(--ease) infinite;
 }
 @keyframes skeleton-wave {
@@ -436,7 +436,7 @@
   display: inline-block;
   width: 16px;
   height: 16px;
-  border: 2px solid rgba(255, 255, 255, 0.25);
+  border: 2px solid color-mix(in srgb, currentColor 25%, transparent);
   border-top-color: currentColor;
   border-radius: 50%;
   animation: spinner-rotate 0.7s linear infinite;
@@ -468,7 +468,7 @@
 
 /* ================= 代码块 ================= */
 .code-block {
-  background: #0b0f16;
+  background: var(--bg-code);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   padding: var(--sp-4);

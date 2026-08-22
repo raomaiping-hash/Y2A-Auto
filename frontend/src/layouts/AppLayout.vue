@@ -5,6 +5,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useToastStore } from '@/stores/toast'
 import { useTasksStore } from '@/stores/tasks'
 import UiToastHost from '@/components/ui/UiToastHost.vue'
+import ThemeSwitcher from '@/components/ui/ThemeSwitcher.vue'
 
 const auth = useAuthStore()
 const toast = useToastStore()
@@ -118,6 +119,7 @@ onBeforeUnmount(() => {
         </button>
         <h2 class="topbar-title">{{ pageTitle }}</h2>
         <div class="topbar-spacer"></div>
+        <ThemeSwitcher />
         <RouterLink to="/tasks" class="btn btn-primary btn-sm topbar-add">
           <i class="bi bi-plus-lg"></i> 新建任务
         </RouterLink>
@@ -145,7 +147,7 @@ onBeforeUnmount(() => {
   width: var(--sidebar-width);
   display: flex;
   flex-direction: column;
-  background: #0c111a;
+  background: var(--bg-sidebar);
   border-right: 1px solid var(--border-subtle);
   z-index: 1050;
 }
@@ -303,7 +305,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: var(--sp-3);
   padding: 0 var(--sp-6);
-  background: rgba(10, 14, 21, 0.82);
+  background: var(--bg-topbar);
   backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--border-subtle);
 }
@@ -345,7 +347,7 @@ onBeforeUnmount(() => {
     position: fixed;
     inset: 0;
     z-index: 1040;
-    background: rgba(4, 7, 12, 0.6);
+    background: var(--scrim);
   }
   .main-col {
     margin-left: 0;

@@ -62,3 +62,12 @@ npm run build
 - 颜色/间距/字号只消费 `tokens.css` 中的 CSS 变量，不写死色值
 - 通用 UI 组件放 `components/ui/`，页面私有样式用 `<style scoped>`
 - 用户提示统一走 `useToastStore()`（success/error/warning/info），危险操作必须用 `UiConfirm` 二次确认
+
+## 主题（深色 / 浅色 / 跟随系统）
+
+- 三种模式由 `stores/theme.ts` 管理，持久化在 `localStorage['y2a-theme']`，默认深色
+- 实现机制：`document.documentElement.dataset.theme = 'dark' | 'light'`，`tokens.css` 中
+  `:root, [data-theme='dark']` 为深色令牌，`[data-theme='light']` 覆盖颜色类令牌（字体/间距/布局共用）
+- `index.html` 内联脚本在首帧前设置主题避免闪烁；「跟随系统」通过 `prefers-color-scheme` 监听实时切换
+- 切换入口：顶栏右侧主题按钮（`components/ui/ThemeSwitcher.vue`）
+- 新增样式时禁止写死颜色；半透明派生色用 `color-mix(in srgb, var(--xxx) N%, transparent)`

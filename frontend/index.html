@@ -3,10 +3,25 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="dark" />
     <link rel="icon" type="image/png" href="/ui/favicon.png" />
     <link rel="icon" type="image/x-icon" href="/ui/favicon.ico" />
     <title>Y2A-Auto · 控制台</title>
+    <script>
+      // 首帧前应用主题，避免闪烁（与 stores/theme.ts 约定一致）
+      ;(function () {
+        try {
+          var m = localStorage.getItem('y2a-theme')
+          if (m !== 'dark' && m !== 'light' && m !== 'system') m = 'dark'
+          var t = m
+          if (m === 'system') {
+            t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+          }
+          document.documentElement.dataset.theme = t
+        } catch (e) {
+          document.documentElement.dataset.theme = 'dark'
+        }
+      })()
+    </script>
   </head>
   <body>
     <div id="app"></div>
