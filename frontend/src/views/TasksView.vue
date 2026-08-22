@@ -210,7 +210,7 @@ function uploadProgressValue(task: Task): number | null {
       </div>
       <div class="filter-search">
         <i class="bi bi-search"></i>
-        <input v-model="searchText" class="input" placeholder="搜索标题…" />
+        <input v-model="searchText" class="input" placeholder="搜索标题 / YouTube 链接…" />
       </div>
     </div>
 

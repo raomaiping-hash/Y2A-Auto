@@ -1611,7 +1611,7 @@ def get_tasks_paginated(page=1, per_page=20, status=None, search=None):
         page (int): 页码，从1开始
         per_page (int): 每页数量，默认20
         status (str, optional): 按状态筛选
-        search (str, optional): 按标题模糊搜索
+        search (str, optional): 按标题或 YouTube 链接模糊搜索
 
     Returns:
         dict: 包含tasks、total、page、per_page、total_pages等信息的字典
@@ -1628,10 +1628,9 @@ def get_tasks_paginated(page=1, per_page=20, status=None, search=None):
         if search and str(search).strip():
             like = f'%{str(search).strip()}%'
             where_clauses.append(
-                '(video_title_original LIKE ? OR video_title_translated LIKE ?)'
+                '(video_title_original LIKE ? OR video_title_translated LIKE ? OR youtube_url LIKE ?)'
             )
-            params.append(like)
-            params.append(like)
+            params.extend([like, like, like])
 
         where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ''
 

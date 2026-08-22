@@ -44,6 +44,21 @@ class ApiV1AuthAndCsrfTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn('tasks', resp.get_json())
 
+    @patch.object(av, 'load_config', return_value={'password_protection_enabled': False})
+    @patch.object(av, 'get_tasks_paginated',
+                  return_value={'tasks': [], 'total': 0, 'total_pages': 0, 'page': 1, 'per_page': 20})
+    def test_tasks_search_query_propagates_as_search(self, pag_mock, *mocks):
+        token = _csrf(self.client)
+        resp = self.client.get('/api/v1/tasks?q=dQw4w9WgXcQ')
+        self.assertEqual(resp.status_code, 200)
+        pag_mock.assert_called_once()
+        kwargs = pag_mock.call_args
+        self.assertEqual(kwargs.kwargs['search'], 'dQw4w9WgXcQ')
+        # get_tasks_paginated 的搜索条件含 youtube_url（按链接检索）
+        import inspect
+        src = inspect.getsource(__import__('modules.task_manager', fromlist=['get_tasks_paginated']).get_tasks_paginated)
+        self.assertIn('youtube_url LIKE ?', src)
+
 
 class ApiV1TaskApiTests(unittest.TestCase):
     def setUp(self):
