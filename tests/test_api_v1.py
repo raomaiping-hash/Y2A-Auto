@@ -2,7 +2,7 @@
 
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import app as web_app
 from modules import api_v1 as av
@@ -150,6 +150,38 @@ class ApiV1TtsTestEndpointTests(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 400)
         self.assertIn('TTS_DUB_API_KEY', resp.get_json()['message'])
+
+    @patch.object(av, 'load_config', return_value={'password_protection_enabled': False, 'TTS_DUB_API_KEY': 'k'})
+    def test_voices_endpoint_normalizes_and_skips_missing_id(self, *mocks):
+        fake = Mock()
+        fake.status_code = 200
+        fake.json.return_value = {
+            'total': 2,
+            'has_more': True,
+            'items': [
+                {'_id': 'abc123', 'title': 'Voice A', 'languages': ['zh'], 'tags': ['female'], 'state': 'trained'},
+                {'title': 'No ID skip me'},
+            ],
+        }
+        token = _csrf(self.client)
+        with patch.object(av.httpx, 'get', return_value=fake) as get_mock:
+            resp = self.client.get('/api/v1/settings/tts/voices?page_size=10', headers={'X-CSRF-Token': token})
+        data = resp.get_json()
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(data['items']), 1)
+        self.assertEqual(data['items'][0]['id'], 'abc123')
+        self.assertEqual(data['items'][0]['title'], 'Voice A')
+        self.assertTrue(data['has_more'])
+        # 代理请求带鉴权头与分页参数
+        headers = get_mock.call_args.kwargs['headers']
+        self.assertEqual(headers['Authorization'], 'Bearer k')
+        self.assertEqual(get_mock.call_args.kwargs['params']['page_size'], 10)
+
+    def test_voices_without_key_returns_400(self):
+        with patch.object(av, 'load_config', return_value={'password_protection_enabled': False, 'TTS_DUB_API_KEY': ''}):
+            token = _csrf(self.client)
+            resp = self.client.get('/api/v1/settings/tts/voices', headers={'X-CSRF-Token': token})
+        self.assertEqual(resp.status_code, 400)
 
 
 if __name__ == '__main__':

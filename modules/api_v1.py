@@ -10,6 +10,7 @@ Y2A-Auto JSON API v1（供 Vue 3 SPA 使用）。
 - 复用 app.py 中已存在的辅助函数（通过 _app() 动态引用），避免逻辑漂移。
 """
 
+import base64
 import json
 import logging
 import mimetypes
@@ -20,6 +21,8 @@ import tempfile
 import threading
 import time
 import uuid
+
+import httpx
 from datetime import datetime, timedelta
 from functools import wraps
 from queue import Empty
@@ -1030,6 +1033,89 @@ def settings_test_tts():
         })
     except Exception as exc:
         return _error(f'合成测试失败: {str(exc)[:200]}', 502)
+
+
+@api_bp.get('/settings/tts/voices')
+@api_protected
+def settings_tts_voices():
+    """浏览 fish.audio 公开说话人库（Voice Library）。"""
+    config = load_config()
+    api_key = str(config.get('TTS_DUB_API_KEY') or '').strip()
+    if not api_key:
+        return _error('未配置 TTS_DUB_API_KEY（语音配音分组）', 400)
+
+    page = int(request.args.get('page') or 1)
+    page_size = min(int(request.args.get('page_size') or 30), 50)
+    query = str(request.args.get('q') or '').strip()[:80]
+
+    params = {'page_size': page_size, 'page_number': max(1, page)}
+    if query:
+        params['title'] = query
+    try:
+        resp = httpx.get(
+            'https://api.fish.audio/model',
+            params=params,
+            headers={'Authorization': f'Bearer {api_key}'},
+            timeout=20,
+        )
+    except Exception as exc:
+        return _error(f'获取说话人列表失败: {str(exc)[:150]}', 502)
+    if resp.status_code != 200:
+        return _error(f'Fish Audio 返回 {resp.status_code}: {resp.text[:150]}', 502)
+
+    data = resp.json() or {}
+    items = []
+    for model in (data.get('items') or []):
+        if not isinstance(model, dict):
+            continue
+        voice_id = str(model.get('_id') or model.get('id') or '').strip()
+        if not voice_id:
+            continue
+        items.append({
+            'id': voice_id,
+            'title': str(model.get('title') or '').strip(),
+            'state': str(model.get('state') or ''),
+            'languages': [str(x) for x in (model.get('languages') or [])],
+            'tags': [str(x) for x in (model.get('tags') or [])],
+            'description': str(model.get('description') or '')[:200],
+        })
+    return jsonify({
+        'success': True,
+        'total': int(data.get('total') or len(items)),
+        'has_more': bool(data.get('has_more', False)),
+        'items': items,
+    })
+
+
+@api_bp.post('/settings/tts/preview')
+@api_protected
+def settings_tts_preview():
+    """按指定说话人合成试听音频（约 1-2 秒文本，返回 base64 mp3）。"""
+    payload = request.get_json(silent=True) or {}
+    voice_id = str(payload.get('voice_id') or '').strip()
+    if not voice_id:
+        return _error('缺少 voice_id', 400)
+    config = load_config()
+    api_key = str(config.get('TTS_DUB_API_KEY') or '').strip()
+    if not api_key:
+        return _error('未配置 TTS_DUB_API_KEY（语音配音分组）', 400)
+    try:
+        from .tts_dub import FishAudioTtsClient
+        client = FishAudioTtsClient(
+            api_key=api_key,
+            model=str(config.get('TTS_DUB_MODEL') or 's2.1-pro-free'),
+            max_retries=int(config.get('TTS_DUB_MAX_RETRIES') or 1),
+            retry_delay_s=0,
+        )
+        audio = client.synthesize('你好，这是 Y2A-Auto 配音功能的试听语音。', reference_id=voice_id)
+        return jsonify({
+            'success': True,
+            'audio_base64': base64.encodebytes(audio).decode('ascii'),
+            'mime': 'audio/mpeg',
+            'voice_id': voice_id,
+        })
+    except Exception as exc:
+        return _error(f'试听合成失败: {str(exc)[:200]}', 502)
 
 
 @api_bp.post('/settings/notifications/test')

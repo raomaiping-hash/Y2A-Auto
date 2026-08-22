@@ -130,6 +130,15 @@ export interface MonitorConfig {
   [key: string]: unknown
 }
 
+export interface TtsVoice {
+  id: string
+  title: string
+  state?: string
+  languages?: string[]
+  tags?: string[]
+  description?: string
+}
+
 export interface TaskStreamEvent {
   type: string
   task_id?: string

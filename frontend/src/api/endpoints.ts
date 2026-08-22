@@ -8,6 +8,7 @@ import type {
   PaginationPayload,
   SessionPayload,
   Task,
+  TtsVoice,
 } from './types'
 
 const V1 = '/api/v1'
@@ -104,6 +105,12 @@ export const settingsApi = {
     api<ApiResponse>(`${V1}/settings/notifications/test`, { method: 'POST', body: { channel } }),
   ttsTest: (text: string) =>
     api<ApiResponse & { duration_ms?: number; model?: string }>(`${V1}/settings/tts/test`, { method: 'POST', body: { text } }),
+  ttsVoices: (params?: { q?: string; page?: number; page_size?: number }) =>
+    api<ApiResponse & { total?: number; has_more?: boolean; items?: TtsVoice[] }>(
+      `${V1}/settings/tts/voices?${new URLSearchParams((params ?? {}) as Record<string, string>).toString()}`,
+    ),
+  ttsPreview: (voiceId: string) =>
+    api<ApiResponse & { audio_base64?: string; mime?: string }>(`${V1}/settings/tts/preview`, { method: 'POST', body: { voice_id: voiceId } }),
   testCookiecloud: () =>
     api<ApiResponse>(`${V1}/settings/cookiecloud/test`, { method: 'POST' }),
   syncCookiecloud: () =>

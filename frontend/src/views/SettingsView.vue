@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { settingsApi } from '@/api/endpoints'
 import { useToastStore } from '@/stores/toast'
 import { ApiError } from '@/api/client'
+import type { TtsVoice } from '@/api/types'
 import UiToggle from '@/components/ui/UiToggle.vue'
 import UiModal from '@/components/ui/UiModal.vue'
 import UiProgress from '@/components/ui/UiProgress.vue'
@@ -573,6 +574,57 @@ async function testTts() {
   }
 }
 
+/* ---- 公开说话人（Voice Library） ---- */
+const voicesQuery = ref('')
+const voiceList = ref<TtsVoice[]>([])
+const voicesLoading = ref(false)
+const voicePreviewBusyId = ref('')
+let voiceAudio: HTMLAudioElement | null = null
+
+async function loadVoices() {
+  voicesLoading.value = true
+  try {
+    const res = await settingsApi.ttsVoices({ q: voicesQuery.value || undefined, page_size: 30 })
+    voiceList.value = res.items ?? []
+  } catch (e) {
+    toast.error('加载说话人失败', e instanceof ApiError ? e.message : '请稍后重试')
+  } finally {
+    voicesLoading.value = false
+  }
+}
+
+async function previewVoice(v: TtsVoice) {
+  voicePreviewBusyId.value = v.id
+  try {
+    const res = await settingsApi.ttsPreview(v.id)
+    if (!res.audio_base64) {
+      toast.error('试听失败', '无音频数据')
+      return
+    }
+    const bin = atob(res.audio_base64)
+    const bytes = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+    const url = URL.createObjectURL(new Blob([bytes], { type: res.mime || 'audio/mpeg' }))
+    if (voiceAudio) {
+      voiceAudio.pause()
+      URL.revokeObjectURL(voiceAudio.dataset.url || '')
+    }
+    voiceAudio = new Audio(url)
+    voiceAudio.dataset.url = url
+    await voiceAudio.play()
+  } catch (e) {
+    toast.error('试听失败', e instanceof ApiError ? e.message : '请稍后重试')
+  } finally {
+    voicePreviewBusyId.value = ''
+  }
+}
+
+function useVoice(v: TtsVoice) {
+  form.TTS_DUB_VOICE_ID = v.id
+  form.TTS_DUB_REFERENCE_MODE = 'voice_id'
+  toast.success(`已选用说话人「${v.title}」`)
+}
+
 /* ---- TG Bot Token ---- */
 const tgBusy = ref(false)
 async function tgAction(action: 'generate' | 'revoke') {
@@ -905,6 +957,42 @@ function onSettingsScroll() {
                 </div>
               </div>
 
+              <!-- 语音识别附加：公开说话人列表 -->
+              <div v-if="section.id === 'speech'" class="field field-full">
+                <span class="field-label">公开说话人（Voice Library）</span>
+                <div class="flex gap-2 flex-wrap mb-2">
+                  <input
+                    v-model="voicesQuery"
+                    class="input voice-search"
+                    placeholder="按标题搜索…"
+                    @keyup.enter="loadVoices"
+                  />
+                  <button class="btn btn-secondary btn-sm" :disabled="voicesLoading" @click="loadVoices">
+                    <span v-if="voicesLoading" class="spinner spinner-sm"></span>
+                    <i v-else class="bi bi-arrow-clockwise"></i> 刷新列表
+                  </button>
+                </div>
+                <div v-if="voiceList.length" class="voice-list">
+                  <div v-for="v in voiceList" :key="v.id" class="voice-row">
+                    <div class="grow" style="min-width: 0">
+                      <div class="voice-title clamp-1">
+                        {{ v.title }}
+                        <span v-if="v.languages?.length" class="voice-meta"> · {{ (v.languages || []).slice(0, 4).join(', ') }}</span>
+                      </div>
+                      <div class="fs-xs text-muted clamp-1 voice-meta">{{ (v.tags || []).slice(0, 4).join(' / ') || v.id.slice(0, 12) }}</div>
+                    </div>
+                    <button class="btn btn-ghost btn-sm" :disabled="voicePreviewBusyId === v.id" @click="previewVoice(v)">
+                      <span v-if="voicePreviewBusyId === v.id" class="spinner spinner-sm"></span>
+                      <i v-else class="bi bi-play-circle"></i> 试听
+                    </button>
+                    <button class="btn btn-secondary btn-sm" :disabled="form.TTS_DUB_VOICE_ID === v.id" @click="useVoice(v)">
+                      <i class="bi bi-check2"></i> {{ form.TTS_DUB_VOICE_ID === v.id ? '已选用' : '使用' }}
+                    </button>
+                  </div>
+                </div>
+                <div v-else class="text-muted fs-xs">{{ voicesLoading ? '加载中…' : '点击「刷新列表」拉取公开说话人' }}</div>
+              </div>
+
               <!-- 通知推送附加：测试按钮 -->
               <div v-if="section.id === 'notify'" class="field field-full">
                 <span class="field-label">发送测试消息</span>
@@ -1062,6 +1150,38 @@ function onSettingsScroll() {
 </template>
 
 <style scoped>
+.voice-search {
+  max-width: 220px;
+}
+.voice-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+.voice-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  transition: background var(--dur-fast) var(--ease);
+}
+.voice-row:hover {
+  background: var(--bg-hover);
+}
+.voice-title {
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+}
+.voice-meta {
+  font-size: var(--fs-xs);
+}
 .page-header {
   display: flex;
   align-items: flex-end;
