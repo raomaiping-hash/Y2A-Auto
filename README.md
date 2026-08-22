@@ -519,6 +519,18 @@ ssh -N -L 5000:127.0.0.1:5000 -o ServerAliveInterval=30 user@<服务器公网IP>
 - 欢迎提交 Issue / PR：`../../issues`
 - 请勿提交包含 Cookie、密钥等敏感信息的文件
 
+## 浏览器端到端测试
+
+`tests/e2e/` 提供基于 Playwright 的浏览器 E2E 套件（24 项断言：主题三模式/仪表盘/任务/详情/审核/监控/设置）。
+
+```bash
+cd tests/e2e
+npm install                # 首次需 npx playwright install chromium
+node e2e.spec.js           # 需先在本机启动服务（python app.py）
+```
+
+安全原则：套件只做只读校验与"自建自删"（测试监控配置跑完即删），不会改动密码保护等敏感状态。
+
 ## 致谢
 
 - [acfun_upload](https://github.com/Aruelius/acfun_upload)
