@@ -299,6 +299,12 @@ def mux_dubbed_video(video_path: str, dubbed_audio_wav: str, out_mp4: str, ffmpe
 
 # ---------------------------------------------------------------- 分离
 
+# 全局分离互斥锁：MDX 分离是 CPU 密集型（N100 4 核），并发会互相拖慢数倍。
+# 同一时刻只允许一个分离；其他请求排队等待（默认最多等 60 分钟，超时降级压低模式）。
+_SEPARATION_LOCK = threading.Lock()
+_SEPARATION_WAIT_SECONDS = 3600
+
+
 def separate_instrumental(
     audio_wav: str,
     out_dir: str,
@@ -312,47 +318,53 @@ def separate_instrumental(
         logger.warning('audio-separator 未安装（%s），降级为压低模式', exc)
         return None
 
-    model_dir = os.path.join(get_app_subdir('models'), 'audio_separator')
-    os.makedirs(model_dir, exist_ok=True)
-    os.makedirs(out_dir, exist_ok=True)
-    model_name = str(model_name or _DEFAULT_SEPARATION_MODEL)
-
-    # audio-separator 需要系统 ffmpeg（探测 + 内部 IO）：调用期间把项目内置 ffmpeg 目录前置到 PATH
-    ffmpeg_checked = get_ffmpeg_path(logger=logger)
-    app_ffmpeg_dir = os.path.dirname(ffmpeg_checked) if ffmpeg_checked else None
-    old_path = os.environ.get('PATH', '')
-    if app_ffmpeg_dir:
-        os.environ['PATH'] = app_ffmpeg_dir + os.pathsep + old_path
+    if not _SEPARATION_LOCK.acquire(timeout=_SEPARATION_WAIT_SECONDS):
+        logger.warning('等待分离锁超时（有其他分离任务占满 CPU），降级为压低模式')
+        return None
     try:
-        separator = Separator(
-            output_dir=str(out_dir),
-            model_file_dir=str(model_dir),
-            output_format='WAV',
-        )
+        model_dir = os.path.join(get_app_subdir('models'), 'audio_separator')
+        os.makedirs(model_dir, exist_ok=True)
+        os.makedirs(out_dir, exist_ok=True)
+        model_name = str(model_name or _DEFAULT_SEPARATION_MODEL)
+
+        # audio-separator 需要系统 ffmpeg（探测 + 内部 IO）：调用期间把项目内置 ffmpeg 目录前置到 PATH
+        ffmpeg_checked = get_ffmpeg_path(logger=logger)
+        app_ffmpeg_dir = os.path.dirname(ffmpeg_checked) if ffmpeg_checked else None
+        old_path = os.environ.get('PATH', '')
+        if app_ffmpeg_dir:
+            os.environ['PATH'] = app_ffmpeg_dir + os.pathsep + old_path
         try:
-            # 0.44+ API：模型按文件名加载
-            separator.load_model(model_filename=model_name)
-        except TypeError:
-            # 旧版 API：model_name 直接传入构造器
-            separator.load_model(model_name=model_name)
-        files = separator.separate(audio_wav)
-    except Exception as exc:
-        logger.warning('音频分离失败（%s），降级为压低模式', str(exc)[:200])
-        return None
+            separator = Separator(
+                output_dir=str(out_dir),
+                model_file_dir=str(model_dir),
+                output_format='WAV',
+            )
+            try:
+                # 0.44+ API：模型按文件名加载
+                separator.load_model(model_filename=model_name)
+            except TypeError:
+                # 旧版 API：model_name 直接传入构造器
+                separator.load_model(model_name=model_name)
+            files = separator.separate(audio_wav)
+        except Exception as exc:
+            logger.warning('音频分离失败（%s），降级为压低模式', str(exc)[:200])
+            return None
+        finally:
+            os.environ['PATH'] = old_path
+        if not files:
+            logger.warning('音频分离未产生输出，降级为压低模式')
+            return None
+        # 优先取 instrumental 轨（文件名含 instrumental）
+        for name in files:
+            if 'instrumental' in str(name).lower():
+                return os.path.join(out_dir, name)
+        # 兜底：非 vocals 的 stem（模型名可能含 kara 干扰匹配）
+        non_vocals = [name for name in files if 'vocals' not in str(name).lower()]
+        if non_vocals:
+            return os.path.join(out_dir, non_vocals[0])
+        return os.path.join(out_dir, files[0])
     finally:
-        os.environ['PATH'] = old_path
-    if not files:
-        logger.warning('音频分离未产生输出，降级为压低模式')
-        return None
-    # 优先取 instrumental 轨（文件名含 instrumental）
-    for name in files:
-        if 'instrumental' in str(name).lower():
-            return os.path.join(out_dir, name)
-    # 兜底：非 vocals 的 stem（模型名可能含 kara 干扰匹配）
-    non_vocals = [name for name in files if 'vocals' not in str(name).lower()]
-    if non_vocals:
-        return os.path.join(out_dir, non_vocals[0])
-    return os.path.join(out_dir, files[0])
+        _SEPARATION_LOCK.release()
 
 
 # ---------------------------------------------------------------- cue 参考样本
