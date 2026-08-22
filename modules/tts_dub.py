@@ -326,7 +326,6 @@ def separate_instrumental(
             output_dir=str(out_dir),
             model_file_dir=str(model_dir),
             output_format='WAV',
-            use_soundfile=True,
         )
         try:
             # 0.44+ API：模型按文件名加载
@@ -343,11 +342,14 @@ def separate_instrumental(
     if not files:
         logger.warning('音频分离未产生输出，降级为压低模式')
         return None
-    # 优先取 instrumental（非 vocals 且文件名含 instrumental/“伴奏”标识）
+    # 优先取 instrumental 轨（文件名含 instrumental）
     for name in files:
-        lower = str(name).lower()
-        if 'instrumental' in lower or 'kara' in lower:
+        if 'instrumental' in str(name).lower():
             return os.path.join(out_dir, name)
+    # 兜底：非 vocals 的 stem（模型名可能含 kara 干扰匹配）
+    non_vocals = [name for name in files if 'vocals' not in str(name).lower()]
+    if non_vocals:
+        return os.path.join(out_dir, non_vocals[0])
     return os.path.join(out_dir, files[0])
 
 

@@ -13,6 +13,8 @@ httpx>=0.27,<0.28
 numpy>=1.24,<3.0
 # TTS 配音：音频分离（保留背景音，onnxruntime CPU，无 torch）
 audio-separator~=0.44.5
+# audio-separator 需要 librosa<1.0 的 get_duration(filename=...) API
+librosa>=0.10.1,<1.0
 # silero-vad depends on torch/torchaudio; Dockerfile still installs CPU wheels explicitly.
 silero-vad~=6.2.1
 
