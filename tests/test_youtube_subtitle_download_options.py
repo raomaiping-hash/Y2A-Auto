@@ -46,7 +46,7 @@ class YouTubeSubtitleDownloadOptionsTests(unittest.TestCase):
         self.assertIn("--write-auto-subs", args)
         self.assertEqual(
             args,
-            ["--write-subs", "--sub-langs", "en.*,zh.*", "--convert-subs", "srt", "--write-auto-subs"],
+            ["--write-subs", "--sub-langs", "en,zh-Hans,zh-Hant,zh-CN,zh-TW", "--convert-subs", "srt", "--write-auto-subs"],
         )
         self.assertNotIn("--all-subs", args)
 
@@ -62,7 +62,7 @@ class YouTubeSubtitleDownloadOptionsTests(unittest.TestCase):
         )
 
         lang_index = args.index("--sub-langs")
-        self.assertEqual(args[lang_index + 1], "ja.*,en.*,zh.*")
+        self.assertEqual(args[lang_index + 1], "ja,en,zh-Hans,zh-Hant,zh-CN,zh-TW")
 
 
 class YtDlpErrorSummaryAndFfmpegPreflightTests(unittest.TestCase):

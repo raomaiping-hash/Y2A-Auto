@@ -184,5 +184,37 @@ class ApiV1TtsTestEndpointTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 400)
 
 
+class ApiV1DubEndpointTests(unittest.TestCase):
+    def setUp(self):
+        web_app.app.config['TESTING'] = True
+        self.client = web_app.app.test_client()
+
+    @patch.object(av, 'load_config', return_value={'password_protection_enabled': False, 'TTS_DUB_API_KEY': ''})
+    @patch.object(av, 'get_task', return_value={'id': 't1', 'status': 'ready_for_upload', 'video_path_local': '/tmp/x.mp4'})
+    @patch.object(av.os.path, 'isfile', return_value=True)
+    @patch.object(av.os, 'listdir', return_value=['video.zh.srt'])
+    @patch.object(av.os.path, 'dirname', return_value='/tmp')
+    def test_dub_without_key_returns_400(self, *mocks):
+        token = _csrf(self.client)
+        resp = self.client.post('/api/v1/tasks/t1/dub', headers={'X-CSRF-Token': token})
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('TTS_DUB_API_KEY', resp.get_json()['message'])
+
+    @patch.object(av, 'load_config', return_value={'password_protection_enabled': False, 'TTS_DUB_API_KEY': 'k'})
+    @patch.object(av, 'get_task', return_value={'id': 't1', 'status': 'ready_for_upload', 'video_path_local': ''})
+    def test_dub_without_video_returns_400(self, *mocks):
+        token = _csrf(self.client)
+        resp = self.client.post('/api/v1/tasks/t1/dub', headers={'X-CSRF-Token': token})
+        self.assertEqual(resp.status_code, 400)
+
+    @patch.object(av, 'load_config', return_value={'password_protection_enabled': False, 'TTS_DUB_API_KEY': 'k'})
+    @patch.object(av, 'get_task', return_value={'id': 't1', 'status': 'dubbing_audio', 'video_path_local': '/tmp/x.mp4'})
+    @patch.object(av.os.path, 'isfile', return_value=True)
+    def test_dub_while_dubbing_returns_409(self, *mocks):
+        token = _csrf(self.client)
+        resp = self.client.post('/api/v1/tasks/t1/dub', headers={'X-CSRF-Token': token})
+        self.assertEqual(resp.status_code, 409)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -260,6 +260,24 @@ onBeforeUnmount(() => {
 const canStart = computed(() => ['pending', 'failed'].includes(task.value?.status ?? ''))
 const canForceUpload = computed(() => ['awaiting_manual_review', 'ready_for_upload', 'completed', 'failed'].includes(task.value?.status ?? ''))
 const canReprocess = computed(() => ['ready_for_upload', 'failed'].includes(task.value?.status ?? ''))
+const canDub = computed(() => {
+  const status = task.value?.status ?? ''
+  return (
+    ['ready_for_upload', 'completed', 'awaiting_manual_review', 'failed'].includes(status)
+    && task.value?.preview_kind !== 'dubbed'
+  )
+})
+
+async function generateDub() {
+  if (!task.value) return
+  try {
+    const res = await tasksApi.dub(task.value.id)
+    toast.success(res.message || '配音生成已启动')
+    task.value.status = 'dubbing_audio' as Task['status']
+  } catch (e) {
+    toast.error('启动配音失败', e instanceof ApiError ? e.message : '请稍后重试')
+  }
+}
 
 function reprocess() {
   confirmState.value = {
@@ -309,6 +327,9 @@ function formatTime(dt?: string): string {
         <p class="page-subtitle mono">{{ taskId }}</p>
       </div>
       <div class="page-actions" v-if="task">
+        <button v-if="canDub" class="btn btn-secondary btn-sm" title="用现有字幕文件一次性合成配音并替换原声" @click="generateDub">
+          <i class="bi bi-mic-fill"></i> 生成配音
+        </button>
         <button v-if="canReprocess" class="btn btn-secondary btn-sm" title="重置断点并重跑字幕翻译/配音等后续阶段" @click="reprocess">
           <i class="bi bi-arrow-repeat"></i> 重新处理
         </button>

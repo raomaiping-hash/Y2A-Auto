@@ -328,13 +328,11 @@ def _build_subtitle_download_args(
         return ['--no-write-subs']
 
     # 只下载目标语言字幕：下游仅消费中文（直接烧录）与英文（翻译），
-    # 其他源语言由 ASR 转录兜底；全量下载（--all-subs）会触发 YouTube 429 限流。
-    sub_langs = ['en.*', 'zh.*']
+    # 通配（en.*）会连带下载 YouTube 自动翻译的衍生语言（en-ar/en-de…），既冗余又易触发 429
+    sub_langs = ['en', 'zh-Hans', 'zh-Hant', 'zh-CN', 'zh-TW']
     source_lang = str((config or {}).get('SUBTITLE_SOURCE_LANGUAGE') or 'auto').strip().lower()
-    if source_lang and source_lang != 'auto':
-        pattern = f'{source_lang}.*'
-        if pattern not in sub_langs and source_lang not in ('en', 'zh'):
-            sub_langs.insert(0, pattern)
+    if source_lang and source_lang not in ('auto', 'en', 'zh'):
+        sub_langs.insert(0, source_lang)
 
     return [
         '--write-subs',

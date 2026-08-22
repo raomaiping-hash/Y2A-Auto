@@ -578,6 +578,48 @@ def task_reprocess(task_id):
         return _error('重新处理失败', 500)
 
 
+@api_bp.post('/tasks/<task_id>/dub')
+@api_protected
+def task_dub(task_id):
+    """用现有视频+字幕文件一次性生成配音（后台线程执行，无需整条管线重跑）。"""
+    from .task_manager import setup_task_logger
+
+    config = load_config()
+    api_key = str(config.get('TTS_DUB_API_KEY') or '').strip()
+    if not api_key:
+        return _error('未配置 TTS_DUB_API_KEY（语音配音分组）', 400)
+    task = get_task(task_id)
+    if not task:
+        return _error('任务不存在', 404)
+    video_path = str(task.get('video_path_local') or '').strip()
+    if not video_path or not os.path.isfile(video_path):
+        return _error('本地视频文件不存在，请先完成下载/处理', 400)
+
+    has_srt = False
+    try:
+        task_dir = os.path.dirname(video_path)
+        has_srt = any(str(f).lower().endswith('.srt') for f in os.listdir(task_dir))
+    except OSError:
+        pass
+    if not (str(task.get('subtitle_path_translated') or '').strip()
+            or str(task.get('subtitle_path_original') or '').strip() or has_srt):
+        return _error('任务没有可用字幕文件，无法生成配音', 400)
+
+    logger = setup_task_logger(task_id)
+    update_task(task_id, status='dubbing_audio')
+
+    from .task_manager import get_global_task_processor
+    processor = get_global_task_processor(config)
+
+    threading.Thread(
+        target=processor._maybe_dub_audio,
+        args=(task_id, logger),
+        daemon=True,
+        name=f'task-dub-{task_id[:8]}',
+    ).start()
+    return _ok('配音生成已启动，可稍后在详情页预览成品·配音')
+
+
 @api_bp.post('/tasks/reset_stuck')
 @api_protected
 def tasks_reset_stuck():
