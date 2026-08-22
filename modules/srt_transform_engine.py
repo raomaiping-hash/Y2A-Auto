@@ -724,6 +724,45 @@ class SrtTransformEngine:
             lines.append('')
         return '\n'.join(lines).strip() + '\n'
 
+    def deduplicate_progressive_overlaps(self, cues: Sequence[Any]) -> List[Dict[str, Any]]:
+        """合并 YouTube 自动字幕的"渐进式"重复 cue。
+
+        自动字幕常见形态：识别窗口滚动时，后一条 cue 的文本是前一条的超集
+        （"黎明将至" → "黎明将至，" → "黎明将至，黑夜终将过去"），时间窗口高度重叠，
+        烧录后看起来就是重复字幕。规则：
+        - 相邻且时间窗口重叠/相接（gap < 0.15s）
+        - 一条文本是另一条的前缀（或完全相等）
+        → 合并为一条：时间取并集，文本取更长者。
+        """
+        merged: List[Dict[str, Any]] = []
+        for raw_cue in self._coerce_cue_dicts(cues):
+            text = str(raw_cue.get('text') or '').strip()
+            if not text:
+                continue
+            cue = dict(raw_cue)
+            cue['text'] = text
+            if not merged:
+                merged.append(cue)
+                continue
+            prev = merged[-1]
+            prev_text = str(prev.get('text') or '').strip()
+            gap = float(cue.get('start', 0)) - float(prev.get('end', 0))
+            if gap < 0.15:
+                is_prefix = prev_text.startswith(text) or text.startswith(prev_text)
+                if is_prefix:
+                    if len(text) > len(prev_text):
+                        prev['text'] = text
+                    prev['end'] = max(float(prev.get('end', 0)), float(cue.get('end', 0)))
+                    continue
+            merged.append(cue)
+        return merged
+
+    def clean_srt_text(self, srt_text: str, base_offset_s: float = 0.0) -> str:
+        """解析 SRT 并合并渐进式重复后重新渲染为 SRT 文本。"""
+        cues = self.parse_srt(srt_text, base_offset_s=base_offset_s)
+        cleaned = self.deduplicate_progressive_overlaps(cues)
+        return self.render_srt(cleaned) or ''
+
     def _coerce_cue_dicts(self, cues: Sequence[Any]) -> List[Dict[str, Any]]:
         normalized: List[Dict[str, Any]] = []
         for cue in cues or []:

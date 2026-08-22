@@ -3381,6 +3381,10 @@ class TaskProcessor:
                         )
                         return True
             
+            # 合并 YouTube 自动字幕的渐进式重复（如"黎明将至"→"黎明将至，黑夜终将过去"），
+            # 避免烧录/翻译/配音出现重复文本
+            subtitle_files = self._clean_subtitle_files(subtitle_files, task_logger)
+
             # 优化选择策略：若有中文字幕则直接烧录；否则优先选英文字幕进行翻译
             detected_list = []
             for f in subtitle_files:
@@ -6175,6 +6179,31 @@ class TaskProcessor:
             task_logger.error(f"SRT/VTT转ASS转换失败: {str(e)}")
             return False
 
+    @staticmethod
+    def _clean_subtitle_files(subtitle_files, task_logger):
+        """为每个 srt 生成合并渐进式重复后的 cleaned 副本，返回替换后的列表。"""
+        from .srt_transform_engine import SrtTransformConfig, SrtTransformEngine
+        engine = SrtTransformEngine(SrtTransformConfig())
+        cleaned = []
+        for path in subtitle_files:
+            if not isinstance(path, str) or not path.lower().endswith('.srt') or not os.path.isfile(path):
+                cleaned.append(path)
+                continue
+            try:
+                with open(path, 'r', encoding='utf-8', errors='replace') as fh:
+                    text = engine.clean_srt_text(fh.read())
+                if text:
+                    out_path = path[:-4] + '.cleaned.srt'
+                    with open(out_path, 'w', encoding='utf-8') as fh:
+                        fh.write(text)
+                    cleaned.append(out_path)
+                    task_logger.debug("字幕已去重: %s -> %s", os.path.basename(path), os.path.basename(out_path))
+                    continue
+            except Exception as exc:
+                task_logger.debug("字幕去重失败，使用原文件 %s: %s", path, exc)
+            cleaned.append(path)
+        return cleaned
+
     def _maybe_dub_audio(self, task_id, task_logger):
         """TTS 配音：翻译后字幕合成语音替换原声，保留背景音。
 
@@ -6238,11 +6267,37 @@ class TaskProcessor:
 
     @staticmethod
     def _resolve_dub_subtitle(task, task_dir, task_logger):
-        """解析配音文本来源字幕文件：翻译后 → 原始 → 任务目录 srt（中文优先）。"""
+        """解析配音文本来源字幕文件：翻译后 → 原始 → 任务目录 srt（中文优先）。
+
+        返回的均为合并渐进式重复后的 cleaned 副本（缺则现场生成）。
+        """
+        from .srt_transform_engine import SrtTransformConfig, SrtTransformEngine
+        engine = SrtTransformEngine(SrtTransformConfig())
+
+        def _ensure_cleaned(path):
+            if not path or not os.path.isfile(path) or not path.lower().endswith('.srt'):
+                return path
+            if path.endswith('.cleaned.srt'):
+                return path
+            cleaned_path = path[:-4] + '.cleaned.srt'
+            if os.path.isfile(cleaned_path):
+                return cleaned_path
+            try:
+                with open(path, 'r', encoding='utf-8', errors='replace') as fh:
+                    text = engine.clean_srt_text(fh.read())
+                if text:
+                    with open(cleaned_path, 'w', encoding='utf-8') as fh:
+                        fh.write(text)
+                    return cleaned_path
+            except Exception:
+                pass
+            return path
+
         for key in ('subtitle_path_translated', 'subtitle_path_original'):
             p = str(task.get(key) or '').strip()
             if p and os.path.isfile(p):
-                return p
+                return _ensure_cleaned(p)
+
         srt_candidates = []
         try:
             for name in os.listdir(task_dir):
@@ -6253,11 +6308,15 @@ class TaskProcessor:
                     srt_candidates.append((name.lower(), full))
         except OSError:
             return None
-        zh_candidates = [full for name, full in srt_candidates if 'zh' in name]
+        # 优先 cleaned 副本，其次中文
+        cleaned_candidates = [f for n, f in srt_candidates if n.endswith('.cleaned.srt')]
+        zh_candidates = [f for n, f in srt_candidates if 'zh' in n and not n.endswith('.cleaned.srt')]
+        if cleaned_candidates:
+            return cleaned_candidates[0]
         if zh_candidates:
-            return zh_candidates[0]
+            return _ensure_cleaned(zh_candidates[0])
         if srt_candidates:
-            return srt_candidates[0][1]
+            return _ensure_cleaned(srt_candidates[0][1])
         return None
 
     def _embed_subtitle_in_video(self, task_id, video_path, subtitle_path, task_logger):
