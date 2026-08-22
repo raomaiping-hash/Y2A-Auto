@@ -147,6 +147,7 @@ class TranslationConfig:
     context_enabled: bool = False          # 上下文感知：注入前/后文 + 主题摘要 + 术语
     glossary_enabled: bool = False         # 术语表提取：翻译前先抽取统一译法
     reflect_translate: bool = False        # 两阶段翻译：忠实直译 -> 自然意译（双倍 LLM 调用）
+    cue_max_chars: int = 22                # 单条字幕最大字数：超过按短句拆分多条（时间按字数比例分配）
 
 class SubtitleReader:
     """字幕文件读取器"""
@@ -319,18 +320,73 @@ class SubtitleReader:
 class SubtitleWriter:
     """字幕文件输出器"""
 
+    # CJK 字符（中文/日文假名/韩文）——其相邻空格在字幕中应删除
+    _CJK_SPACE_BETWEEN_RE = re.compile(
+        r'(?<=[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af])'
+        r'[ \t]+'
+        r'(?=[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af])'
+    )
+
     @staticmethod
     def _strip_terminal_full_stop(text: str) -> str:
-        """移除标点符号，保留空格/换行（字幕无需标点，利于短行显示）。"""
+        """移除标点符号，保留空格（字幕无需标点，利于短行显示）。"""
         if not text:
             return text
-        import re
         # CJK 与 ASCII 常见标点全部去掉；保留词内连字符(如 3D / T-shirt)以免破坏词义
         text = re.sub(r'[，。！？；：、、…—·“”‘’（）《》〈〉【】\[\]{}<>"\'`]', ' ', str(text))
         text = re.sub(r'[,.!?;:()]', ' ', text)
         text = re.sub(r'[ \t]+', ' ', text)
         text = re.sub(r' *\n *', '\n', text)
         return text.strip()
+
+    @staticmethod
+    def _remove_cjk_spaces(text: str) -> str:
+        """删除 CJK 字符之间的空格（中文无需词间空格，如 'a b' -> 'ab'）。
+
+        仅作用于相邻 CJK 字符之间，英文单词间空格保留。
+        """
+        if not text:
+            return text
+        text = SubtitleWriter._CJK_SPACE_BETWEEN_RE.sub('', text)
+        return re.sub(r'[ \t]+', ' ', text).strip()
+
+    @staticmethod
+    def _split_long_cue(text: str, max_chars: int = 22) -> List[str]:
+        """把过长字幕拆成多个短字幕（优先按空格断句点）。
+
+        - 每个空格分隔的片段就是一条完整短句，绝不从中截断；
+        - 片段过短（<=3 字，如 ASR 边界残词"可就在"）不算一句话，直接丢弃；
+        - 若无空格断句点（译文内部未留空格）且仍超长，按 max_chars 硬切兜底，
+          尾段过短并入前段。
+        """
+        if not text:
+            return [text]
+        if len(text) <= max_chars:
+            return [text]
+        segs = [p for p in str(text).split(' ') if len(p) > 3]
+        if len(segs) == 1 and len(segs[0]) > max_chars:
+            # 无空格断句点：按条数均分硬切，避免尾部碎片
+            s = segs[0]
+            import math
+            n = math.ceil(len(s) / max_chars)
+            per = math.ceil(len(s) / n)
+            segs = [s[i:i + per] for i in range(0, len(s), per)]
+        return segs or [text]
+
+    @staticmethod
+    def _ts_to_seconds(ts: str) -> float:
+        """SRT 时间戳 -> 秒。"""
+        h, m, s = str(ts).replace(',', '.').split(':')
+        return int(h) * 3600 + int(m) * 60 + float(s)
+
+    @staticmethod
+    def _seconds_to_ts(sec: float) -> str:
+        """秒 -> SRT 时间戳。"""
+        ms = max(0, int(round(sec * 1000)))
+        h, ms = divmod(ms, 3600000)
+        m, ms = divmod(ms, 60000)
+        s, ms = divmod(ms, 1000)
+        return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
     @staticmethod
     def _wrap_to_max_lines(text: str, max_chars: int = 21, max_lines: int = 2) -> str:
@@ -360,35 +416,59 @@ class SubtitleWriter:
         return SubtitleWriter._wrap_to_max_lines(SubtitleWriter._strip_terminal_full_stop(text))
 
     @staticmethod
-    def write_srt(items: List[SubtitleItem], output_path: str, translated: bool = True):
-        """写入SRT字幕文件"""
+    def _prepare_cues(items: List[SubtitleItem], translated: bool, max_chars: int) -> List[dict]:
+        """清洗 + 拆分 + 去 CJK 空格 + 时间按字数比例分配，产出可写出的 cue 列表。"""
+        out: List[dict] = []
+        for item in items:
+            text = item.translated_text if translated and item.translated_text else item.source_text
+            if translated:
+                # 1) 去标点（标点替换为空格，保留短句边界）
+                base = SubtitleWriter._strip_terminal_full_stop(text)
+                # 2) 长句拆短句
+                segs = SubtitleWriter._split_long_cue(base, max_chars)
+            else:
+                segs = [str(text or '').strip()]
+            # 3) 删除 CJK 间空格
+            segs = [SubtitleWriter._remove_cjk_spaces(s) for s in segs]
+            t0 = SubtitleWriter._ts_to_seconds(item.start_time)
+            t1 = SubtitleWriter._ts_to_seconds(item.end_time)
+            total_chars = sum(len(s) for s in segs) or 1
+            dur = max(t1 - t0, 0.2)
+            cursor = t0
+            for seg in segs:
+                seg_dur = dur * len(seg) / total_chars
+                out.append({
+                    'start': SubtitleWriter._seconds_to_ts(cursor),
+                    'end': SubtitleWriter._seconds_to_ts(cursor + seg_dur),
+                    'text': seg,
+                })
+                cursor += seg_dur
+        return out
+
+    @staticmethod
+    def write_srt(items: List[SubtitleItem], output_path: str, translated: bool = True, max_chars: int = 22):
+        """写入SRT字幕文件（长字幕自动拆短句，中文词间空格移除）。"""
         try:
+            cues = SubtitleWriter._prepare_cues(items, translated, max_chars)
             with open(output_path, 'w', encoding='utf-8') as f:
-                for item in items:
-                    text = item.translated_text if translated and item.translated_text else item.source_text
-                    if translated:
-                        text = SubtitleWriter._clean_subtitle_text(text)
-                    f.write(f"{item.index}\n")
-                    f.write(f"{item.time_range}\n")
-                    f.write(f"{text}\n\n")
+                for idx, cue in enumerate(cues, 1):
+                    f.write(f"{idx}\n")
+                    f.write(f"{cue['start']} --> {cue['end']}\n")
+                    f.write(f"{cue['text']}\n\n")
             logger.info(f"SRT文件已保存: {output_path}")
         except Exception as e:
             logger.error(f"写入SRT文件失败: {e}")
-    
+
     @staticmethod
-    def write_vtt(items: List[SubtitleItem], output_path: str, translated: bool = True):
-        """写入VTT字幕文件"""
+    def write_vtt(items: List[SubtitleItem], output_path: str, translated: bool = True, max_chars: int = 22):
+        """写入VTT字幕文件（长字幕自动拆短句，中文词间空格移除）。"""
         try:
+            cues = SubtitleWriter._prepare_cues(items, translated, max_chars)
             with open(output_path, 'w', encoding='utf-8') as f:
                 f.write("WEBVTT\n\n")
-                for item in items:
-                    text = item.translated_text if translated and item.translated_text else item.source_text
-                    if translated:
-                        text = SubtitleWriter._clean_subtitle_text(text)
-                    start_time = item.start_time.replace(',', '.')
-                    end_time = item.end_time.replace(',', '.')
-                    f.write(f"{start_time} --> {end_time}\n")
-                    f.write(f"{text}\n\n")
+                for cue in cues:
+                    f.write(f"{cue['start'].replace(',', '.')} --> {cue['end'].replace(',', '.')}\n")
+                    f.write(f"{cue['text']}\n\n")
             logger.info(f"VTT文件已保存: {output_path}")
         except Exception as e:
             logger.error(f"写入VTT文件失败: {e}")
@@ -961,7 +1041,7 @@ class SubtitleTranslator:
             if out_path.lower().endswith('.vtt'):
                 out_path = out_path[:-4] + '.srt'
                 
-            self.writer.write_srt(items, out_path, translated=True)
+            self.writer.write_srt(items, out_path, translated=True, max_chars=getattr(self.config, 'cue_max_chars', 22))
 
             self.logger.info(f"快速修复完成：{out_path}")
             return True
@@ -1398,10 +1478,11 @@ class SubtitleTranslator:
         """写入翻译后的文件"""
         try:
             output_ext = Path(output_path).suffix.lower()
+            max_chars = int(getattr(self.config, 'cue_max_chars', 22) or 22)
             if output_ext == '.srt':
-                self.writer.write_srt(items, output_path, translated=True)
+                self.writer.write_srt(items, output_path, translated=True, max_chars=max_chars)
             elif output_ext == '.vtt':
-                self.writer.write_vtt(items, output_path, translated=True)
+                self.writer.write_vtt(items, output_path, translated=True, max_chars=max_chars)
             else:
                 self.logger.error(f"不支持的输出格式: {output_ext}")
                 return False
@@ -1504,6 +1585,7 @@ def create_translator_from_config(app_config: Dict, task_id: Optional[str] = Non
             context_enabled=_to_bool(app_config.get('SUBTITLE_TRANSLATE_CONTEXT_ENABLED', False)),
             glossary_enabled=_to_bool(app_config.get('SUBTITLE_GLOSSARY_ENABLED', False)),
             reflect_translate=_to_bool(app_config.get('SUBTITLE_TRANSLATE_REFLECT_ENABLED', False)),
+            cue_max_chars=int(app_config.get('SUBTITLE_CUE_MAX_CHARS', 22) or 22),
         )
         
         if not translation_config.api_key:

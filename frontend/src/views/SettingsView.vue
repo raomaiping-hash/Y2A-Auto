@@ -123,6 +123,7 @@ const SECTIONS: SectionDef[] = [
       { key: 'SUBTITLE_TRANSLATE_CONTEXT_ENABLED', label: '上下文感知翻译', type: 'toggle', hint: '翻译时注入前/后文上下文，提高语境连贯性（参考 VideoLingo）' },
       { key: 'SUBTITLE_GLOSSARY_ENABLED', label: '术语表提取', type: 'toggle', hint: '翻译前抽取主题摘要+统一术语译法，术语前后一致（可能增加一次 LLM 调用）' },
       { key: 'SUBTITLE_TRANSLATE_REFLECT_ENABLED', label: '两阶段意译', type: 'toggle', hint: '先直译再意译成自然对白（双倍 LLM 调用，慢网关慎开）' },
+      { key: 'SUBTITLE_CUE_MAX_CHARS', label: '单条字幕最大字数', type: 'number', hint: '超过自动拆成多条短句，时间按字数比例分配；中文词间空格会自动去除' },
       { key: 'SUBTITLE_EMBED_IN_VIDEO', label: '字幕烧录进视频', type: 'toggle' },
       { key: 'SUBTITLE_KEEP_ORIGINAL', label: '保留原始字幕文件', type: 'toggle' },
       { key: 'SUBTITLE_QC_ENABLED', label: '启用字幕质检', type: 'toggle', hint: '质量优先：质检失败则不烧录字幕，任务仍会完成' },

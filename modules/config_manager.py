@@ -150,6 +150,7 @@ DEFAULT_CONFIG = {
     "SUBTITLE_TRANSLATE_CONTEXT_ENABLED": False,  # 上下文感知：翻译注入前 3 条 + 后 2 条上下文
     "SUBTITLE_GLOSSARY_ENABLED": False,  # 术语表提取：翻译前抽取主题摘要 + 统一术语译法（一次 LLM 调用）
     "SUBTITLE_TRANSLATE_REFLECT_ENABLED": False,  # 两阶段翻译：忠实直译 -> 自然意译（双倍 LLM 调用，慢网关慎开）
+    "SUBTITLE_CUE_MAX_CHARS": 22,  # 单条字幕最大字数：超过按短句拆成多条，时间按字数比例分配
     # 并发控制配置
     "MAX_CONCURRENT_TASKS": 2,  # 最大并发任务数
     "MAX_CONCURRENT_UPLOADS": 1,  # 最大并发上传数
