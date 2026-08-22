@@ -34,7 +34,8 @@ class YouTubeSubtitleDownloadOptionsTests(unittest.TestCase):
 
         self.assertEqual(args, ["--no-write-subs"])
 
-    def test_includes_auto_generated_subtitle_flag_when_enabled(self):
+    def test_includes_target_language_sub_langs_when_enabled(self):
+        """启用自动字幕时只下载目标语言（en/zh），避免全量下载触发 429 限流"""
         build_args = _load_function("_build_subtitle_download_args")
 
         args = build_args(
@@ -43,7 +44,25 @@ class YouTubeSubtitleDownloadOptionsTests(unittest.TestCase):
         )
 
         self.assertIn("--write-auto-subs", args)
-        self.assertEqual(args[:-1], ["--write-subs", "--all-subs", "--convert-subs", "srt"])
+        self.assertEqual(
+            args,
+            ["--write-subs", "--sub-langs", "en.*,zh.*", "--convert-subs", "srt", "--write-auto-subs"],
+        )
+        self.assertNotIn("--all-subs", args)
+
+    def test_includes_explicit_source_language_in_sub_langs(self):
+        build_args = _load_function("_build_subtitle_download_args")
+
+        args = build_args(
+            {
+                "YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED": True,
+                "SUBTITLE_SOURCE_LANGUAGE": "ja",
+            },
+            include_subtitles=True,
+        )
+
+        lang_index = args.index("--sub-langs")
+        self.assertEqual(args[lang_index + 1], "ja.*,en.*,zh.*")
 
 
 class YouTubeJsRuntimeOptionsTests(unittest.TestCase):
