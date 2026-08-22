@@ -564,6 +564,20 @@ def tasks_retry_failed():
         return _error(f'重试失败任务失败: {e}', 500)
 
 
+@api_bp.post('/tasks/<task_id>/reprocess')
+@api_protected
+def task_reprocess(task_id):
+    """重新处理任务：重置断点并置待处理，重跑字幕翻译与配音等后续阶段。"""
+    from .task_manager import reprocess_task
+    try:
+        if not reprocess_task(task_id):
+            return _error('任务不存在，无法重新处理', 404)
+        return _ok('已重新调度：将按断点跳过已完成阶段并补跑字幕翻译/配音')
+    except Exception as e:
+        logger.error('重新处理任务 %s 失败: %s', task_id, e)
+        return _error('重新处理失败', 500)
+
+
 @api_bp.post('/tasks/reset_stuck')
 @api_protected
 def tasks_reset_stuck():

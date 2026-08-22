@@ -2006,6 +2006,32 @@ def retry_metadata_translation_task(task_id, config=None):
         logger.warning(f"重新调度元数据翻译任务 {task_id} 失败，且状态回滚失败")
     return False
 
+def reprocess_task(task_id: str) -> bool:
+    """重新处理任务：清空断点并置为 pending，让管线按断点推导跳过已完成阶段，
+    重跑字幕翻译与配音等后续阶段（主要用于给已就绪任务补配音）。
+
+    已有视频/元数据/标题等完成阶段由 _infer_completed_stages_from_task 推断为已完成而跳过；
+    配音阶段（dub_audio）不在推断列表里，故会重新执行。
+    """
+    task = get_task(task_id)
+    if not task:
+        logger.warning(f"任务 {task_id} 不存在，无法重新处理")
+        return False
+    request_task_cancel(task_id)
+    event = get_task_cancel_event(task_id)
+    if event:
+        event.clear()  # 清掉取消标志，避免重跑被立即取消
+    update_task(
+        task_id,
+        status=TASK_STATES['PENDING'],
+        pipeline_checkpoint=None,
+        error_message=None,
+        error_category=None,
+    )
+    logger.info(f"任务 {task_id} 已重置为待处理（将按断点跳过已完成阶段）")
+    return True
+
+
 def delete_task_files(task_id):
     """
     删除任务相关文件
@@ -6162,22 +6188,24 @@ class TaskProcessor:
             task_logger.error("任务不存在，跳过配音")
             return True
         video_path = str(task.get('video_path_local') or '').strip()
-        translated_srt = str(task.get('subtitle_path_translated') or '').strip()
-        original_srt = str(task.get('subtitle_path_original') or '').strip()
         if not video_path or not os.path.isfile(video_path):
             task_logger.warning("视频文件不存在，跳过配音")
             return True
-        if not translated_srt or not os.path.isfile(translated_srt):
-            task_logger.warning("无翻译后字幕文件，跳过配音")
+
+        # 配音文本来源：优先翻译后字幕；否则用烧录/原字幕（如中文源视频直接烧录，无翻译文件）
+        subtitle_path = self._resolve_dub_subtitle(task, os.path.dirname(video_path), task_logger)
+        if not subtitle_path:
+            task_logger.warning("无可用字幕文件，跳过配音")
             return True
 
         update_task(task_id, status=TASK_STATES['DUBBING_AUDIO'])
         task_dir = os.path.dirname(video_path)
 
+        original_srt = str(task.get('subtitle_path_original') or '').strip()
         dubbed_audio, warnings = build_dubbed_audio(
             task_dir,
             video_path,
-            translated_srt,
+            subtitle_path,
             original_srt if os.path.isfile(original_srt) else None,
             self.config,
             task_logger,
@@ -6187,7 +6215,6 @@ class TaskProcessor:
 
         if not dubbed_audio or not os.path.isfile(dubbed_audio):
             task_logger.warning("配音未完成，保留原音频继续")
-            # 恢复为字幕阶段后的状态由主流程后续步骤处理
             return True
 
         try:
@@ -6198,7 +6225,6 @@ class TaskProcessor:
             if not os.path.isfile(out_mp4):
                 task_logger.warning("配音视频封装失败，保留原音频")
                 return True
-            # 清理中间产物（保留最终成片）
             shutil.rmtree(os.path.join(task_dir, '_dub_tmp'), ignore_errors=True)
             update_task(task_id, video_path_local=out_mp4)
             task_logger.info("配音完成：%s", out_mp4)
@@ -6209,6 +6235,30 @@ class TaskProcessor:
         except Exception as exc:  # noqa: BLE001
             task_logger.warning("配音封装异常，保留原音频：%s", str(exc)[:200])
             return True
+
+    @staticmethod
+    def _resolve_dub_subtitle(task, task_dir, task_logger):
+        """解析配音文本来源字幕文件：翻译后 → 原始 → 任务目录 srt（中文优先）。"""
+        for key in ('subtitle_path_translated', 'subtitle_path_original'):
+            p = str(task.get(key) or '').strip()
+            if p and os.path.isfile(p):
+                return p
+        srt_candidates = []
+        try:
+            for name in os.listdir(task_dir):
+                if not isinstance(name, str) or not name.lower().endswith('.srt'):
+                    continue
+                full = os.path.join(task_dir, name)
+                if os.path.isfile(full):
+                    srt_candidates.append((name.lower(), full))
+        except OSError:
+            return None
+        zh_candidates = [full for name, full in srt_candidates if 'zh' in name]
+        if zh_candidates:
+            return zh_candidates[0]
+        if srt_candidates:
+            return srt_candidates[0][1]
+        return None
 
     def _embed_subtitle_in_video(self, task_id, video_path, subtitle_path, task_logger):
         """使用FFmpeg将字幕嵌入视频（修复版本 - 添加超时机制）"""

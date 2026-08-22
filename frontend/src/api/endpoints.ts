@@ -56,6 +56,7 @@ export const tasksApi = {
     api<ApiResponse>(`${V1}/tasks/clear_all`, { method: 'POST', body: { delete_files: deleteFiles } }),
   retryFailed: () => api<ApiResponse>(`${V1}/tasks/retry_failed`, { method: 'POST' }),
   resetStuck: () => api<ApiResponse>(`${V1}/tasks/reset_stuck`, { method: 'POST' }),
+  reprocess: (taskId: string) => api<ApiResponse>(`${V1}/tasks/${taskId}/reprocess`, { method: 'POST' }),
   retryTranslation: (taskId: string) =>
     api<ApiResponse>(`${V1}/tasks/${taskId}/retry_translation`, { method: 'POST' }),
   forceUpload: (taskId: string) =>

@@ -259,6 +259,20 @@ onBeforeUnmount(() => {
 
 const canStart = computed(() => ['pending', 'failed'].includes(task.value?.status ?? ''))
 const canForceUpload = computed(() => ['awaiting_manual_review', 'ready_for_upload', 'completed', 'failed'].includes(task.value?.status ?? ''))
+const canReprocess = computed(() => ['ready_for_upload', 'failed'].includes(task.value?.status ?? ''))
+
+function reprocess() {
+  confirmState.value = {
+    open: true,
+    title: '重新处理',
+    message: '将重置断点并重跑字幕翻译、配音等后续阶段（已完成的下载/翻译等会跳过）。确定继续吗？',
+    action: async () => {
+      await tasksApi.reprocess(taskId.value)
+      toast.success('已重新调度，请稍后查看进度')
+      load()
+    },
+  }
+}
 
 const previewKindText = computed(() => {
   if (task.value?.preview_kind === 'dubbed') return '成品·配音'
@@ -295,6 +309,9 @@ function formatTime(dt?: string): string {
         <p class="page-subtitle mono">{{ taskId }}</p>
       </div>
       <div class="page-actions" v-if="task">
+        <button v-if="canReprocess" class="btn btn-secondary btn-sm" title="重置断点并重跑字幕翻译/配音等后续阶段" @click="reprocess">
+          <i class="bi bi-arrow-repeat"></i> 重新处理
+        </button>
         <button v-if="canStart" class="btn btn-primary btn-sm" @click="startTask">
           <i class="bi bi-play-fill"></i> 开始处理
         </button>
