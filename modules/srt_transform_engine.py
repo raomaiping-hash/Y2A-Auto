@@ -724,16 +724,24 @@ class SrtTransformEngine:
             lines.append('')
         return '\n'.join(lines).strip() + '\n'
 
-    def deduplicate_progressive_overlaps(self, cues: Sequence[Any]) -> List[Dict[str, Any]]:
+    def deduplicate_progressive_overlaps(
+        self,
+        cues: Sequence[Any],
+        similarity_threshold: float = 0.62,
+        max_chain: int = 8,
+    ) -> List[Dict[str, Any]]:
         """合并 YouTube 自动字幕的"渐进式"重复 cue。
 
-        自动字幕常见形态：识别窗口滚动时，后一条 cue 的文本是前一条的超集
-        （"黎明将至" → "黎明将至，" → "黎明将至，黑夜终将过去"），时间窗口高度重叠，
-        烧录后看起来就是重复字幕。规则：
-        - 相邻且时间窗口重叠/相接（gap < 0.15s）
-        - 一条文本是另一条的前缀（或完全相等）
-        → 合并为一条：时间取并集，文本取更长者。
+        自动字幕形态：识别窗口滚动，后一条 cue 与前一条时间窗口高度重叠，
+        文本是同一句的修正/加长版（前缀式或高相似）。合并规则（保守）：
+        - 时间上视为"同一窗口"：重叠 ≥ 前一条时长的一半，或间隔 < 0.15s
+        - 文本：完全相同，或 SequenceMatcher 相似度 ≥ 阈值，或一条是另一条子串
+          （长度比 ≥ 0.6 时）
+        - 单次合并链不超过 max_chain（防失控）
+        - 合并后时间取并集，但末尾钳制到下一 cue 起点（避免烧录两条同屏）
+        - 正当的连续重复台词（时间窗口不同）不会被合并
         """
+        import difflib
         merged: List[Dict[str, Any]] = []
         for raw_cue in self._coerce_cue_dicts(cues):
             text = str(raw_cue.get('text') or '').strip()
@@ -746,15 +754,46 @@ class SrtTransformEngine:
                 continue
             prev = merged[-1]
             prev_text = str(prev.get('text') or '').strip()
-            gap = float(cue.get('start', 0)) - float(prev.get('end', 0))
-            if gap < 0.15:
-                is_prefix = prev_text.startswith(text) or text.startswith(prev_text)
-                if is_prefix:
+            prev_start = float(prev.get('start', 0))
+            prev_end = float(prev.get('end', 0))
+            cue_start = float(cue.get('start', 0))
+            cue_end = float(cue.get('end', 0))
+            gap = cue_start - prev_end
+            overlap = max(0.0, prev_end - cue_start)
+            prev_dur = max(0.01, prev_end - prev_start)
+            near_same_window = overlap >= prev_dur * 0.5 or gap < 0.15
+            chain_len = int(prev.get('_chain_len', 1))
+
+            if near_same_window and chain_len < max_chain:
+                if prev_text == text:
+                    similar = True
+                else:
+                    # 同一滚动窗口内的包含关系（短句被长句完整包含）即渐进式修正
+                    if prev_text in text or text in prev_text:
+                        similar = True
+                    else:
+                        sm = difflib.SequenceMatcher(None, prev_text, text)
+                        similar = sm.ratio() >= similarity_threshold
+                if similar:
                     if len(text) > len(prev_text):
                         prev['text'] = text
-                    prev['end'] = max(float(prev.get('end', 0)), float(cue.get('end', 0)))
+                    prev['end'] = max(prev_end, cue_end)
+                    prev['_chain_len'] = chain_len + 1
                     continue
             merged.append(cue)
+
+        # 时间钳制：合并后的 end 不超过下一条 start，避免同屏重叠显示
+        for i in range(len(merged) - 1):
+            cur_end = float(merged[i].get('end', 0))
+            nxt_start = float(merged[i + 1].get('start', 0))
+            if cur_end > nxt_start:
+                merged[i]['end'] = nxt_start
+
+        # 清理内部字段并保证最小时长
+        for cue in merged:
+            cue.pop('_chain_len', None)
+            if float(cue.get('end', 0)) <= float(cue.get('start', 0)):
+                cue['end'] = float(cue.get('start', 0)) + 0.5
         return merged
 
     def clean_srt_text(self, srt_text: str, base_offset_s: float = 0.0) -> str:
