@@ -6230,6 +6230,15 @@ class TaskProcessor:
         update_task(task_id, status=TASK_STATES['DUBBING_AUDIO'])
         task_dir = os.path.dirname(video_path)
 
+        def _restore_status_if_still_dubbing():
+            """配音中断/失败/跳过时恢复任务状态，避免一直卡在"配音中"。"""
+            try:
+                current = get_task(task_id)
+                if current and current.get('status') == TASK_STATES['DUBBING_AUDIO']:
+                    update_task(task_id, status=TASK_STATES['READY_FOR_UPLOAD'], silent=True)
+            except Exception:
+                pass
+
         original_srt = str(task.get('subtitle_path_original') or '').strip()
         dubbed_audio, warnings = build_dubbed_audio(
             task_dir,
@@ -6244,6 +6253,7 @@ class TaskProcessor:
 
         if not dubbed_audio or not os.path.isfile(dubbed_audio):
             task_logger.warning("配音未完成，保留原音频继续")
+            _restore_status_if_still_dubbing()
             return True
 
         try:
@@ -6262,20 +6272,25 @@ class TaskProcessor:
                 )
                 if mux_input == video_path:
                     task_logger.warning("未找到可作为配音输入的基础视频，保留原音频")
+                    _restore_status_if_still_dubbing()
                     return True
             mux_dubbed_video(mux_input, dubbed_audio, out_mp4, ffmpeg_bin, task_logger)
             if not os.path.isfile(out_mp4):
                 task_logger.warning("配音视频封装失败，保留原音频")
+                _restore_status_if_still_dubbing()
                 return True
             shutil.rmtree(os.path.join(task_dir, '_dub_tmp'), ignore_errors=True)
             update_task(task_id, video_path_local=out_mp4)
             task_logger.info("配音完成：%s", out_mp4)
+            _restore_status_if_still_dubbing()
             return True
         except TtsDubError as exc:
             task_logger.warning("配音封装失败，保留原音频：%s", exc)
+            _restore_status_if_still_dubbing()
             return True
         except Exception as exc:  # noqa: BLE001
             task_logger.warning("配音封装异常，保留原音频：%s", str(exc)[:200])
+            _restore_status_if_still_dubbing()
             return True
 
     @staticmethod
