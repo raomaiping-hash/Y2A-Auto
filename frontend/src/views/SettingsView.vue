@@ -310,7 +310,10 @@ async function load() {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  window.addEventListener('scroll', onSettingsScroll, { passive: true })
+})
 
 function boolOf(v: unknown): boolean {
   if (typeof v === 'boolean') return v
@@ -526,6 +529,7 @@ function closeQr() {
 onBeforeUnmount(() => {
   if (pollTimer) clearInterval(pollTimer)
   if (qrTimer) clearInterval(qrTimer)
+  window.removeEventListener('scroll', onSettingsScroll)
 })
 
 /* ---- 通知测试 ---- */
@@ -628,9 +632,53 @@ function resetSection(section: SectionDef) {
 }
 
 /* ---- 滚动高亮 ---- */
+let pendingScrollTarget: string | null = null
+let pendingPrevTop: number | null = null
+let pendingScrollTimer: ReturnType<typeof setTimeout> | null = null
+
 function scrollToSection(id: string) {
   activeSection.value = id
+  // 平滑滚动期间把高亮钉在目标分组；到达目标或用户反向滚动时恢复位置跟随
+  pendingScrollTarget = id
+  pendingPrevTop = null
+  if (pendingScrollTimer) clearTimeout(pendingScrollTimer)
+  pendingScrollTimer = setTimeout(() => {
+    pendingScrollTarget = null
+  }, 1500)
   sectionsRef.value[id]?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
+/** 页面滚动时按可见位置更新左侧菜单高亮（反向联动） */
+function onSettingsScroll() {
+  const threshold = 120 // 该值以下（页面顶部区域）视为"当前所在分组"
+  if (pendingScrollTarget) {
+    const targetEl = sectionsRef.value[pendingScrollTarget]
+    if (targetEl) {
+      const top = targetEl.getBoundingClientRect().top
+      const reached = top <= threshold + 10
+      const movingAway = pendingPrevTop !== null && top > pendingPrevTop + 2
+      if (reached || movingAway) {
+        pendingScrollTarget = null
+        pendingPrevTop = null
+      } else {
+        pendingPrevTop = top
+        return // 仍在接近目标：高亮保持目标分组
+      }
+    } else {
+      pendingScrollTarget = null
+    }
+  }
+  const sections = Object.entries(sectionsRef.value).filter(([, el]) => el)
+  if (!sections.length) return
+  let current = sections[0][0]
+  for (const [id, el] of sections) {
+    if ((el as HTMLElement).getBoundingClientRect().top <= threshold) current = id
+  }
+  // 滚动到底部时选中最后一组
+  const nearBottom =
+    window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 8
+  if (nearBottom) current = sections[sections.length - 1][0]
+  if (current !== activeSection.value) activeSection.value = current
 }
 </script>
 
