@@ -492,3 +492,43 @@ kbd {
   font-family: var(--font-mono);
   color: var(--text-secondary);
 }
+
+/* ================= 移动端通用修正 ================= */
+/* 表单字段允许收缩，避免内嵌长内容撑破 grid/flex 列 */
+.field {
+  min-width: 0;
+}
+/* callout / 长说明文本：允许长 URL、文件路径在窄屏内换行，不撑破容器 */
+.callout {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.callout span,
+.callout .truncate {
+  min-width: 0;
+}
+/* .truncate 默认 nowrap，窄屏下限制最大宽度，避免把容器撑出视口 */
+@media (max-width: 768px) {
+  .truncate {
+    max-width: 100%;
+  }
+  .callout,
+  .card-body,
+  .field,
+  .detail-main,
+  .detail-side {
+    min-width: 0;
+  }
+  .input,
+  .select,
+  .textarea {
+    width: 100%;
+    max-width: 100%;
+  }
+  /* 按钮行窄屏允许换行，避免溢出视口 */
+  .flex.gap-2,
+  .flex.gap-3,
+  .flex.gap-4 {
+    flex-wrap: wrap;
+  }
+}

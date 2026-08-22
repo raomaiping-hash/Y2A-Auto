@@ -269,23 +269,23 @@ function uploadProgressValue(task: Task): number | null {
           </thead>
           <tbody>
             <tr v-for="task in store.items" :key="task.id" class="row-click" @click="router.push(`/tasks/${task.id}`)">
-              <td class="mono text-muted" :title="task.id">{{ task.id.slice(0, 6) }}…</td>
-              <td style="max-width: 340px">
+              <td class="mono text-muted" data-label="ID" :title="task.id">{{ task.id.slice(0, 6) }}…</td>
+              <td data-label="标题" style="max-width: 340px">
                 <div class="clamp-2 task-title">{{ task.video_title_translated || task.video_title_original || '（未获取标题）' }}</div>
                 <div v-if="task.video_title_translated && task.video_title_original && task.video_title_translated !== task.video_title_original" class="task-origin clamp-1" :title="task.video_title_original">
                   {{ task.video_title_original }}
                 </div>
               </td>
-              <td class="ta-center">
+              <td class="ta-center" data-label="平台">
                 <span class="target-chip">{{ targetLabel(task.upload_target) }}</span>
               </td>
-              <td class="ta-center">
+              <td class="ta-center" data-label="状态">
                 <TaskStatusBadge :status="task.status" />
                 <div v-if="task.error_message" class="task-error clamp-1" :title="task.error_message">
                   <i class="bi bi-exclamation-circle"></i> {{ task.error_message }}
                 </div>
               </td>
-              <td>
+              <td data-label="进度">
                 <UiProgress
                   v-if="uploadProgressValue(task) !== null"
                   :value="uploadProgressValue(task)"
@@ -294,7 +294,7 @@ function uploadProgressValue(task: Task): number | null {
                 />
                 <span v-else class="text-muted fs-xs">—</span>
               </td>
-              <td class="ta-center text-muted fs-sm">{{ formatLocal(task.updated_at) }}</td>
+              <td class="ta-center text-muted fs-sm" data-label="更新时间">{{ formatLocal(task.updated_at) }}</td>
               <td class="ta-right" @click.stop>
                 <UiDropdown :items="rowActions(task)" @select="onSelect(task, $event)" />
               </td>
@@ -463,5 +463,100 @@ function uploadProgressValue(task: Task): number | null {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ---------- 移动端：任务表格转卡片式列表 ---------- */
+@media (max-width: 768px) {
+  .table-wrap {
+    overflow: visible;
+  }
+  .table,
+  .table thead,
+  .table tbody,
+  .table th,
+  .table td,
+  .table tr {
+    display: block;
+    width: 100%;
+  }
+  .table thead {
+    display: none;
+  }
+  .table tbody tr {
+    position: relative;
+    margin-bottom: var(--sp-3);
+    padding: var(--sp-3) var(--sp-4);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+  }
+  .table tbody tr:hover {
+    background: var(--bg-hover);
+  }
+  .table tbody td {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--sp-2);
+    padding: 5px 0;
+    border-bottom: 1px solid var(--border-subtle);
+    text-align: left;
+  }
+  .table tbody td:last-child {
+    border-bottom: none;
+  }
+  .table tbody td[data-label]::before {
+    content: attr(data-label);
+    flex-shrink: 0;
+    width: 62px;
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    color: var(--text-muted);
+    padding-top: 2px;
+  }
+  .table tbody td[data-label="标题"]::before {
+    width: auto;
+  }
+  .table tbody td[data-label="标题"] {
+    flex-direction: column;
+    gap: 4px;
+  }
+  .table tbody td[data-label="标题"]::before {
+    display: none;
+  }
+  /* 标题占满一行，其余按 label 排列 */
+  .table tbody td[data-label="状态"],
+  .table tbody td[data-label="平台"] {
+    flex-wrap: wrap;
+  }
+  .table tbody tr td:nth-child(2) {
+    order: -1;
+  }
+  .table tbody td[data-label="ID"] {
+    display: none;
+  }
+  .table tbody td[data-label="更新时间"] {
+    display: none;
+  }
+  .table tbody td.ta-right {
+    display: block;
+    text-align: right;
+    border-top: 1px solid var(--border-subtle);
+    margin-top: 4px;
+    padding-top: 8px;
+  }
+  /* 顶部操作按钮不换行过长 */
+  .page-actions {
+    width: 100%;
+    gap: var(--sp-2);
+  }
+  .filter-bar {
+    align-items: stretch;
+  }
+  .filter-search {
+    width: 100%;
+  }
+  .filter-search .input {
+    width: 100%;
+  }
 }
 </style>

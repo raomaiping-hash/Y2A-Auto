@@ -217,14 +217,14 @@ function uploadLink(t: { upload_target: string; upload_id: string | null }): str
           </thead>
           <tbody>
             <tr v-for="t in data?.recent_tasks" :key="t.id" class="row-click" @click="$router.push(`/tasks/${t.id}`)">
-              <td class="mono text-muted">{{ t.id.slice(0, 6) }}…</td>
-              <td class="clamp-2" style="max-width: 380px">{{ t.title }}</td>
-              <td class="ta-center"><TaskStatusBadge :status="t.status" /></td>
-              <td class="ta-center">
+              <td class="mono text-muted" data-label="ID">{{ t.id.slice(0, 6) }}…</td>
+              <td class="clamp-2" data-label="标题" style="max-width: 380px">{{ t.title }}</td>
+              <td class="ta-center" data-label="状态"><TaskStatusBadge :status="t.status" /></td>
+              <td class="ta-center" data-label="平台">
                 <span class="target-chip">{{ t.upload_target === 'both' ? '双平台' : t.upload_target === 'bilibili' ? 'B站' : 'AcFun' }}</span>
               </td>
-              <td class="ta-center text-muted fs-sm">{{ formatLocal(t.updated_at) }}</td>
-              <td class="ta-right">
+              <td class="ta-center text-muted fs-sm" data-label="更新时间">{{ formatLocal(t.updated_at) }}</td>
+              <td class="ta-right" data-label="结果">
                 <template v-if="t.upload_id">
                   <a
                     v-if="uploadLink(t)"
@@ -500,6 +500,68 @@ function uploadLink(t: { upload_target: string; upload_id: string | null }): str
   .kpi-grid,
   .queue-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+/* 最近动态表格在窄屏转卡片式 */
+@media (max-width: 768px) {
+  .table-wrap {
+    overflow: visible;
+  }
+  .table,
+  .table thead,
+  .table tbody,
+  .table th,
+  .table td,
+  .table tr {
+    display: block;
+    width: 100%;
+  }
+  .table thead {
+    display: none;
+  }
+  .table tbody tr {
+    margin-bottom: var(--sp-3);
+    padding: var(--sp-2) var(--sp-3);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+  }
+  .table tbody td {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--sp-2);
+    padding: 5px 0;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .table tbody td[data-label]::before {
+    content: attr(data-label);
+    flex-shrink: 0;
+    width: 60px;
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    color: var(--text-muted);
+    padding-top: 2px;
+  }
+  .table tbody td[data-label="标题"] {
+    flex-direction: column;
+  }
+  .table tbody td[data-label="标题"]::before {
+    display: none;
+  }
+  .table tbody tr td:nth-child(2) {
+    order: -1;
+  }
+  .table tbody td[data-label="ID"],
+  .table tbody td[data-label="更新时间"] {
+    display: none;
+  }
+  .table tbody td.ta-right {
+    display: block;
+    text-align: right;
+    border-top: 1px solid var(--border-subtle);
+    margin-top: 4px;
+    padding-top: 8px;
   }
 }
 </style>
