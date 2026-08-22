@@ -153,6 +153,13 @@ function typeLabel(t?: string): string {
   return 'YouTube 监控'
 }
 
+function videoTypeLabel(t?: string): string {
+  if (t === 'video') return '普通'
+  if (t === 'short') return '短'
+  if (t === 'live') return '直播'
+  return String(t ?? '—')
+}
+
 function formatViews(v: unknown): string {
   const n = Number(v ?? 0)
   if (n >= 10000) return `${(n / 10000).toFixed(1)}万`
@@ -224,6 +231,9 @@ function formatTime(dt?: string): string {
               <span><i class="bi bi-clock"></i> 最近执行：{{ formatTime(cfg.last_run_time as string) }}</span>
               <span><i class="bi bi-list-ol"></i> 已发现 {{ cfg.history_count ?? 0 }} 个视频</span>
             </div>
+            <div v-if="Array.isArray(cfg.video_types) && cfg.video_types.length" class="monitor-content-types">
+              <span v-for="t in cfg.video_types as string[]" :key="t" class="badge badge-secondary">{{ videoTypeLabel(t) }}</span>
+            </div>
             <div v-if="cfg.keywords" class="monitor-keywords clamp-2" :title="String(cfg.keywords)">
               关键词：{{ cfg.keywords }}
             </div>
@@ -278,7 +288,7 @@ function formatTime(dt?: string): string {
                   <div class="fs-xs text-muted">{{ v.channel_title }}</div>
                 </td>
                 <td class="ta-center">
-                  <span class="badge badge-secondary">{{ v.video_type }}</span>
+                  <span class="badge badge-secondary">{{ videoTypeLabel(v.video_type as string) }}</span>
                 </td>
                 <td class="ta-right mono">{{ formatViews(v.view_count) }}</td>
                 <td class="ta-right mono">{{ formatViews(v.like_count) }}</td>
@@ -397,6 +407,11 @@ function formatTime(dt?: string): string {
   gap: var(--sp-4);
   font-size: var(--fs-xs);
   color: var(--text-muted);
+}
+.monitor-content-types {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
 }
 .monitor-keywords {
   font-size: var(--fs-sm);

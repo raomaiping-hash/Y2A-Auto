@@ -48,6 +48,57 @@ const form = reactive({
   video_types: ['video', 'short', 'live'] as string[],
 })
 
+// 快速模板（与旧版一致的三套预设）
+const PRESETS = [
+  {
+    id: 'trending',
+    label: '热门视频监控',
+    icon: 'bi-fire',
+    values: {
+      monitor_type: 'youtube_search',
+      name: '热门视频监控',
+      keywords: '',
+      region_code: 'US',
+      order_by: 'viewCount',
+      min_view_count: 10000,
+      time_period: 3,
+      schedule_type: 'auto',
+      schedule_interval: 180,
+    },
+  },
+  {
+    id: 'channelLatest',
+    label: '频道最新监控',
+    icon: 'bi-rss-fill',
+    values: {
+      monitor_type: 'channel_search',
+      channel_mode: 'latest',
+      name: '频道最新监控',
+      order_by: 'date',
+      schedule_type: 'auto',
+      schedule_interval: 120,
+      auto_add_to_tasks: true,
+    },
+  },
+  {
+    id: 'channelHistorical',
+    label: '历史视频搬运',
+    icon: 'bi-archive-fill',
+    values: {
+      monitor_type: 'channel_search',
+      channel_mode: 'historical',
+      name: '历史视频搬运',
+      order_by: 'date',
+      schedule_type: 'manual',
+    },
+  },
+] as const
+
+function applyPreset(p: (typeof PRESETS)[number]) {
+  Object.assign(form, p.values)
+  toast.info(`已套用模板「${p.label}」，请确认后保存`)
+}
+
 async function load() {
   try {
     const res = (await monitorApi.config(Number(configIdParam.value))) as unknown as { config: Record<string, unknown> }
@@ -144,7 +195,23 @@ async function submit() {
       <UiSkeleton :rows="8" />
     </div>
 
-    <form v-else class="cfg-grid" @submit.prevent="submit">
+    <!-- 快速模板 -->
+    <template v-else>
+      <!-- 快速模板 -->
+      <div class="preset-row">
+        <span class="preset-label"><i class="bi bi-lightning-charge-fill"></i> 快速模板</span>
+        <button
+          v-for="p in PRESETS"
+          :key="p.id"
+          type="button"
+          class="btn btn-ghost btn-sm"
+          @click="applyPreset(p)"
+        >
+          <i class="bi" :class="p.icon"></i> {{ p.label }}
+        </button>
+      </div>
+
+      <form class="cfg-grid" @submit.prevent="submit">
       <!-- 基本信息 -->
       <div class="card">
         <div class="card-header">
@@ -342,10 +409,33 @@ async function submit() {
         </div>
       </div>
     </form>
+    </template>
   </div>
 </template>
 
 <style scoped>
+.preset-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+.preset-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  margin-right: var(--sp-1);
+}
+.preset-label i {
+  color: var(--warning);
+}
+
 .page-header {
   display: flex;
   align-items: flex-end;

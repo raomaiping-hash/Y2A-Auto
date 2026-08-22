@@ -9,6 +9,7 @@ import TaskStatusBadge from '@/components/ui/TaskStatusBadge.vue'
 import UiSkeleton from '@/components/ui/UiSkeleton.vue'
 import UiEmpty from '@/components/ui/UiEmpty.vue'
 import UiConfirm from '@/components/ui/UiConfirm.vue'
+import UiModal from '@/components/ui/UiModal.vue'
 
 const router = useRouter()
 const toast = useToastStore()
@@ -79,6 +80,29 @@ function askDelete(task: Task) {
   }
 }
 
+// ---- 放弃任务（标记失败，可选同时删除文件） ----
+const abandonState = ref<{ open: boolean; task: Task } | null>(null)
+const abandonDeleteFiles = ref(true)
+
+function askAbandon(task: Task) {
+  abandonDeleteFiles.value = true
+  abandonState.value = { open: true, task }
+}
+
+async function confirmAbandon() {
+  if (!abandonState.value) return
+  const { task } = abandonState.value
+  try {
+    const r = await tasksApi.abandon(task.id, abandonDeleteFiles.value)
+    toast.success(r.message || '任务已废弃')
+    abandonState.value = null
+    load()
+  } catch (e) {
+    toast.error('放弃任务失败', e instanceof ApiError ? e.message : '请稍后重试')
+    abandonState.value = null
+  }
+}
+
 function taskTitle(task: Task): string {
   return task.video_title_translated || task.video_title_original || task.id.slice(0, 8)
 }
@@ -124,6 +148,9 @@ const reviewCount = computed(() => tasks.value.length)
             <button class="btn btn-success btn-sm" @click="forceUploadTask(task)">
               <i class="bi bi-cloud-arrow-up-fill"></i> 强制上传
             </button>
+            <button class="btn btn-ghost btn-sm" title="标记为失败并停止处理" @click="askAbandon(task)">
+              <i class="bi bi-slash-circle"></i> 放弃
+            </button>
             <button class="btn btn-danger btn-sm" @click="askDelete(task)">
               <i class="bi bi-trash3"></i> 删除
             </button>
@@ -157,10 +184,46 @@ const reviewCount = computed(() => tasks.value.length)
       @close="confirmState = null"
       @confirm="runConfirm"
     />
+
+    <!-- 放弃任务（可选同时删除文件） -->
+    <UiModal
+      :open="abandonState?.open ?? false"
+      title="确认放弃任务"
+      size="sm"
+      @close="abandonState = null"
+    >
+      <p class="abandon-text">
+        确定要放弃任务「{{ abandonState ? taskTitle(abandonState.task) : '' }}」吗？任务将标记为失败并停止后续处理。
+      </p>
+      <label class="abandon-check">
+        <input v-model="abandonDeleteFiles" type="checkbox" />
+        同时删除任务文件
+      </label>
+      <template #footer>
+        <button class="btn btn-ghost" @click="abandonState = null">取消</button>
+        <button class="btn btn-danger-solid" @click="confirmAbandon">
+          <i class="bi bi-slash-circle"></i> 放弃任务
+        </button>
+      </template>
+    </UiModal>
   </div>
 </template>
 
 <style scoped>
+.abandon-text {
+  margin: 0 0 var(--sp-3);
+  font-size: var(--fs-md);
+  color: var(--text-secondary);
+}
+.abandon-check {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+  cursor: pointer;
+  user-select: none;
+}
 .page-header {
   display: flex;
   align-items: flex-end;

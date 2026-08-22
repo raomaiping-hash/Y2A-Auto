@@ -6,12 +6,15 @@ import type { DashboardPayload } from '@/api/types'
 import UiStatCard from '@/components/ui/UiStatCard.vue'
 import TaskStatusBadge from '@/components/ui/TaskStatusBadge.vue'
 import UiEmpty from '@/components/ui/UiEmpty.vue'
+import UiModal from '@/components/ui/UiModal.vue'
 import { useTasksStore } from '@/stores/tasks'
 import { useToastStore } from '@/stores/toast'
 import { formatRelativeTime } from '@/composables/taskMeta'
 
 const tasksStore = useTasksStore()
 const toast = useToastStore()
+
+const showGuide = ref(false)
 
 const data = ref<DashboardPayload | null>(null)
 const loading = ref(true)
@@ -59,6 +62,9 @@ function uploadLink(t: { upload_target: string; upload_id: string | null }): str
         <p class="page-subtitle">今日概览 · 实时掌握任务与转发情况</p>
       </div>
       <div class="page-actions">
+        <button class="btn btn-ghost btn-sm" @click="showGuide = true">
+          <i class="bi bi-ui-checks-grid"></i> 快速入门
+        </button>
         <RouterLink to="/tasks" class="btn btn-primary btn-sm">
           <i class="bi bi-plus-lg"></i> 新建任务
         </RouterLink>
@@ -209,6 +215,46 @@ function uploadLink(t: { upload_target: string; upload_id: string | null }): str
       <span class="live-dot" :class="{ on: tasksStore.connected }"></span>
       {{ tasksStore.connected ? '实时更新已连接' : '实时更新未连接' }}
     </div>
+
+    <!-- 快速入门引导 -->
+    <UiModal :open="showGuide" title="快速入门" size="md" @close="showGuide = false">
+      <div class="guide-steps">
+        <div class="guide-step">
+          <div class="guide-step-title"><span class="guide-no">1</span> 准备工作</div>
+          <ul>
+            <li>确保已在「设置中心」配置目标投稿平台账号（AcFun / bilibili）</li>
+            <li>如需 AI 功能，配置 OpenAI API Key</li>
+            <li>如需内容审核，配置阿里云内容安全 API</li>
+          </ul>
+        </div>
+        <div class="guide-step">
+          <div class="guide-step-title"><span class="guide-no">2</span> 添加任务</div>
+          <ul>
+            <li>进入「任务列表」页面，点击「新建任务」</li>
+            <li>粘贴 YouTube 视频 / 播放列表 URL</li>
+          </ul>
+        </div>
+        <div class="guide-step">
+          <div class="guide-step-title"><span class="guide-no">3</span> 自动处理</div>
+          <ul>
+            <li>系统自动下载视频内容</li>
+            <li>AI 自动翻译标题与简介、生成标签并推荐分区</li>
+            <li>按配置执行内容安全审核</li>
+          </ul>
+        </div>
+        <div class="guide-step">
+          <div class="guide-step-title"><span class="guide-no">4</span> 审核与上传</div>
+          <ul>
+            <li>审核通过的任务自动上传</li>
+            <li>需人工处理时在「人工审核」页修改内容</li>
+            <li>修改后可「强制上传」立即发布</li>
+          </ul>
+        </div>
+      </div>
+      <template #footer>
+        <button class="btn btn-primary" @click="showGuide = false">了解了</button>
+      </template>
+    </UiModal>
   </div>
 </template>
 
@@ -329,6 +375,44 @@ function uploadLink(t: { upload_target: string; upload_id: string | null }): str
 .live-dot.on {
   background: var(--success);
   box-shadow: 0 0 6px var(--success);
+}
+
+/* 快速入门 */
+.guide-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+.guide-step-title {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-weight: 600;
+  font-size: var(--fs-md);
+  margin-bottom: var(--sp-1);
+}
+.guide-no {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--accent-gradient);
+  color: #fff;
+  font-size: var(--fs-xs);
+  flex-shrink: 0;
+}
+.guide-step ul {
+  margin: 0;
+  padding-left: 30px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.guide-step li {
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
 }
 
 @media (max-width: 1100px) {
