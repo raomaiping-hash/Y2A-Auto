@@ -112,7 +112,7 @@ const SECTIONS: SectionDef[] = [
     desc: '字幕翻译、质检、烧录与后处理',
     fields: [
       { key: 'SUBTITLE_TRANSLATION_ENABLED', label: '启用字幕翻译', type: 'toggle' },
-      { key: 'YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED', label: '下载 YouTube 自动字幕', type: 'toggle' },
+      { key: 'YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED', label: '下载 YouTube 自动字幕', type: 'toggle', hint: '关闭=不下载自动字幕（自动字幕有滚动式重复）；此时有人工字幕用人工字幕，无人工字幕则由语音识别(ASR)生成无重复字幕', full: true },
       { key: 'SUBTITLE_SOURCE_LANGUAGE', label: '源语言', type: 'text', placeholder: 'auto / en / ja / ko' },
       { key: 'SUBTITLE_TARGET_LANGUAGE', label: '目标语言', type: 'text', placeholder: 'zh / en / ja / ko' },
       { key: 'SUBTITLE_FONT_NAME', label: '烧录字体', type: 'text', hint: 'fonts/ 目录内的字体文件名' },
