@@ -377,6 +377,30 @@ def dashboard():
 
 # ---------------------------------------------------------------- 任务
 
+def _attach_preview_info(task):
+    """为任务列表/详情统一附加本地预览信息（preview_available / preview_kind）。"""
+    task['preview_available'] = False
+    task['preview_kind'] = 'none'
+    task_id = str(task.get('id') or '')
+    if not task_id:
+        return task
+    try:
+        task_dir_real = _app()._get_task_dir_real(task_id)
+    except (ValueError, OSError):
+        return task
+    for name, kind in (
+        ('video_dubbed.mp4', 'dubbed'),
+        ('video_with_subtitle.mp4', 'embedded'),
+        ('video.mp4', 'original'),
+    ):
+        candidate = _app()._safe_join_task_dir(task_dir_real, name)
+        if candidate and os.path.isfile(candidate):
+            task['preview_available'] = True
+            task['preview_kind'] = kind
+            break
+    return task
+
+
 @api_bp.get('/tasks')
 @api_protected
 def tasks_list():
@@ -388,6 +412,7 @@ def tasks_list():
     data = get_tasks_paginated(page=page, per_page=per_page, status=status_filter, search=search)
     for task in data.get('tasks', []):
         task['can_retry_translation'] = is_metadata_translation_retryable(task)
+        _attach_preview_info(task)
     return jsonify(data)
 
 
@@ -426,23 +451,7 @@ def task_detail(task_id):
     task['tags_list'] = tags_list
 
     # 本地成品视频预览信息
-    task['preview_available'] = False
-    task['preview_kind'] = 'none'
-    try:
-        task_dir_real = _app()._get_task_dir_real(task_id)
-        embedded = _app()._safe_join_task_dir(task_dir_real, 'video_dubbed.mp4')
-        if not (embedded and os.path.isfile(embedded)):
-            embedded = _app()._safe_join_task_dir(task_dir_real, 'video_with_subtitle.mp4')
-        original = _app()._safe_join_task_dir(task_dir_real, 'video.mp4')
-        if embedded and os.path.isfile(embedded):
-            task['preview_available'] = True
-            task['preview_kind'] = 'dubbed' if os.path.basename(embedded) == 'video_dubbed.mp4' else 'embedded'
-        elif original and os.path.isfile(original):
-            task['preview_available'] = True
-            task['preview_kind'] = 'original'
-    except (ValueError, OSError):
-        task['preview_available'] = False
-        task['preview_kind'] = 'none'
+    _attach_preview_info(task)
 
     return jsonify({
         'success': True,

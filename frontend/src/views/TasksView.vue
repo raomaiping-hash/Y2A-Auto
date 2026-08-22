@@ -6,7 +6,7 @@ import { useTasksStore } from '@/stores/tasks'
 import { useToastStore } from '@/stores/toast'
 import { ApiError } from '@/api/client'
 import type { Task, UploadTarget } from '@/api/types'
-import { targetLabel, formatRelativeTime } from '@/composables/taskMeta'
+import { targetLabel, formatRelativeTime, statusDisplay } from '@/composables/taskMeta'
 import TaskStatusBadge from '@/components/ui/TaskStatusBadge.vue'
 import UiModal from '@/components/ui/UiModal.vue'
 import UiConfirm from '@/components/ui/UiConfirm.vue'
@@ -80,20 +80,35 @@ async function submitAdd() {
 
 /* ---- 行操作 ---- */
 function rowActions(task: Task): DropdownItem[] {
+  const status = task.status
   const items: DropdownItem[] = [
+    { id: '_status', label: `当前状态：${statusDisplay(status)}`, header: true },
     { id: 'view', label: '查看 / 编辑', icon: 'bi-pencil-square' },
   ]
-  if (['pending', 'failed'].includes(task.status)) {
+  if (['pending', 'failed'].includes(status)) {
     items.push({ id: 'start', label: '开始处理', icon: 'bi-play-fill' })
   }
   if (task.can_retry_translation) {
     items.push({ id: 'retry_translation', label: '重试自动翻译', icon: 'bi-translate' })
   }
-  if (['awaiting_manual_review', 'ready_for_upload', 'completed', 'failed'].includes(task.status)) {
+  if (task.preview_available) {
+    items.push({ id: 'preview', label: '预览视频', icon: 'bi-film' })
+  }
+  const isDubbed = (task as { preview_kind?: string }).preview_kind === 'dubbed'
+  if (
+    task.preview_available &&
+    !isDubbed &&
+    ['awaiting_manual_review', 'ready_for_upload', 'completed', 'failed'].includes(status)
+  ) {
+    items.push({ id: 'dub', label: '生成配音', icon: 'bi-mic-fill', disabled: isDubbed })
+  }
+  if (['awaiting_manual_review', 'ready_for_upload', 'completed', 'failed'].includes(status)) {
     items.push({ id: 'force_upload', label: '强制上传', icon: 'bi-cloud-arrow-up-fill' })
   }
-  if (task.status !== 'completed') {
-    items.push({ id: 'abandon', label: '放弃任务', icon: 'bi-slash-circle' })
+  // 危险操作分隔
+  items.push({ id: '_sep', divider: true } as DropdownItem)
+  if (status !== 'completed') {
+    items.push({ id: 'abandon', label: '放弃任务', icon: 'bi-slash-circle', danger: true })
   }
   items.push({ id: 'delete', label: '删除任务', icon: 'bi-trash3', danger: true })
   return items
@@ -139,6 +154,15 @@ function onSelect(task: Task, item: DropdownItem) {
         toast.success(r.message)
         store.fetchPage().catch(() => undefined)
       }).catch((e) => toast.error('重试失败', e.message))
+      break
+    case 'preview':
+      router.push(`/tasks/${task.id}`)
+      break
+    case 'dub':
+      askConfirm('生成配音', `将用任务「${taskTitle(task)}」现有字幕文件合成配音并替换原声（约几分钟，后台执行）。确定继续吗？`, () => tasksApi.dub(task.id).then((r) => {
+        toast.success(r.message || '配音生成已启动')
+        store.fetchPage().catch(() => undefined)
+      }))
       break
     case 'force_upload':
       tasksApi.forceUpload(task.id).then((r) => {
