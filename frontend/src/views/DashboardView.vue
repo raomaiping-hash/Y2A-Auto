@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
-import { dashboardApi } from '@/api/endpoints'
-import type { DashboardPayload } from '@/api/types'
+import { dashboardApi, healthApi } from '@/api/endpoints'
+import type { DashboardPayload, SystemHealthPayload } from '@/api/types'
 import UiStatCard from '@/components/ui/UiStatCard.vue'
 import TaskStatusBadge from '@/components/ui/TaskStatusBadge.vue'
 import UiEmpty from '@/components/ui/UiEmpty.vue'
@@ -18,6 +18,7 @@ const showGuide = ref(false)
 
 const data = ref<DashboardPayload | null>(null)
 const loading = ref(true)
+const health = ref<SystemHealthPayload | null>(null)
 
 async function load() {
   try {
@@ -29,12 +30,31 @@ async function load() {
   }
 }
 
+async function loadHealth() {
+  try {
+    health.value = (await healthApi.get()) as SystemHealthPayload
+  } catch {
+    /* 健康检查失败不阻塞页面 */
+  }
+}
+
+const healthItems = computed(() => {
+  const tools = health.value?.runtime_tools ?? {}
+  const items: { label: string; status: string; text: string }[] = []
+  if (tools.ffmpeg) items.push({ label: 'FFmpeg', status: tools.ffmpeg.status ?? 'unknown', text: tools.ffmpeg.path ? '已就绪' : '未安装' })
+  if (tools.vad) items.push({ label: 'VAD 语音分段', status: tools.vad.status ?? 'unknown', text: tools.vad.message ?? '' })
+  if (tools.asr) items.push({ label: '语音识别', status: tools.asr.status ?? 'unknown', text: tools.asr.message ?? '' })
+  if (tools.disk) items.push({ label: '磁盘剩余', status: tools.disk.status ?? 'unknown', text: `${tools.disk.free_gb ?? '?'} GB` })
+  return items
+})
+
 function onTasksChanged() {
   load()
 }
 
 onMounted(() => {
   load()
+  loadHealth()
   window.addEventListener('tasks:changed', onTasksChanged)
 })
 onBeforeUnmount(() => window.removeEventListener('tasks:changed', onTasksChanged))
@@ -104,6 +124,24 @@ function uploadLink(t: { upload_target: string; upload_id: string | null }): str
         tone="info"
         :loading="loading"
       />
+    </div>
+
+    <!-- 系统环境 -->
+    <div class="card env-card">
+      <div class="card-header">
+        <div class="card-title"><i class="bi bi-pc-display"></i> 系统环境</div>
+        <button v-if="health" class="btn btn-ghost btn-sm" title="重新检查" @click="loadHealth">
+          <i class="bi bi-arrow-clockwise"></i>
+        </button>
+      </div>
+      <div class="env-items">
+        <div v-for="item in healthItems" :key="item.label" class="env-item">
+          <span class="env-dot" :class="`env-dot--${item.status}`"></span>
+          <span class="env-label">{{ item.label }}</span>
+          <span class="env-text">{{ item.text || '—' }}</span>
+        </div>
+        <div v-if="!healthItems.length" class="env-empty text-muted fs-sm">环境信息不可用</div>
+      </div>
     </div>
 
     <!-- 队列状态 -->
@@ -376,6 +414,42 @@ function uploadLink(t: { upload_target: string; upload_id: string | null }): str
   background: var(--success);
   box-shadow: 0 0 6px var(--success);
 }
+
+/* 系统环境 */
+.env-card {
+  margin-top: var(--sp-5);
+}
+.env-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-6);
+  padding: var(--sp-4);
+}
+.env-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+}
+.env-label {
+  color: var(--text-secondary);
+}
+.env-text {
+  color: var(--text-primary);
+}
+.env-empty {
+  padding: var(--sp-2) 0;
+}
+.env-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.env-dot--ok { background: var(--success); box-shadow: 0 0 6px var(--success); }
+.env-dot--warn { background: var(--warning); }
+.env-dot--missing, .env-dot--disabled { background: var(--text-muted); }
+.env-dot--error, .env-dot--unknown { background: var(--danger); }
 
 /* 快速入门 */
 .guide-steps {

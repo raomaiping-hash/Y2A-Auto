@@ -27,13 +27,18 @@ from .utils import get_app_subdir
 def setup_youtube_monitor_logger():
     """设置YouTube监控专用日志"""
     logger = logging.getLogger('Y2A-Auto.YouTube-Monitor')
-    
+
     # 如果已经设置过处理器，直接返回
     if logger.handlers:
         return logger
-    
+
     logger.setLevel(logging.INFO)
-    
+
+    # 不添加模块自己的控制台处理器：控制台输出统一走根 logger
+    # （避免同一消息以两个 logger 名在控制台各打一条）；
+    # 保留 propagate 让根 logger 收到消息，同时模块文件处理器保证专用日志。
+    logger.propagate = True
+
     # 创建logs目录
     logs_dir = get_app_subdir('logs')
     os.makedirs(logs_dir, exist_ok=True)
@@ -50,14 +55,7 @@ def setup_youtube_monitor_logger():
     file_handler.setFormatter(file_formatter)
     file_handler.setLevel(logging.INFO)
     
-    # 控制台处理器
-    console_handler = logging.StreamHandler()
-    console_formatter = logging.Formatter('%(asctime)s - YouTube监控 - %(levelname)s - %(message)s')
-    console_handler.setFormatter(console_formatter)
-    console_handler.setLevel(logging.INFO)
-    
     logger.addHandler(file_handler)
-    logger.addHandler(console_handler)
     
     return logger
 

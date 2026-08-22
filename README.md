@@ -36,12 +36,16 @@
 </p>
 
 <p align="center">
+  <img src="static/img/readme/dashboard-light.png" alt="Dashboard Light Screenshot" width="45%" />
   <img src="static/img/readme/monitor-real.png" alt="Monitor Screenshot" width="45%" />
-  <img src="static/img/readme/settings-real.png" alt="Settings Screenshot" width="45%" />
+</p>
+
+<p align="center">
+  <img src="static/img/readme/settings-real.png" alt="Settings Screenshot" width="92%" />
 </p>
 
 <div align="center">
-  <sub>以上为当前页面截图。</sub>
+  <sub>以上为新版 Vue 3 控制台截图（支持深色 / 浅色 / 跟随系统三种主题）。</sub>
 </div>
 
 ## 核心亮点
@@ -111,13 +115,13 @@ Y2A-Auto/
 ├── cookies/
 ├── db/
 ├── downloads/
-├── ffmpeg/
+├── ffmpeg/            # 可选：静态 ffmpeg/ffprobe 二进制（本地运行缺 ffmpeg 时放入，Docker 已内置）
 ├── fonts/
+├── frontend/          # Vue 3 SPA 控制台源码（构建产物由 Flask 托管于 /ui/）
 ├── logs/
 ├── modules/
 ├── static/
 ├── temp/
-├── templates/
 └── tests/
 ```
 
@@ -140,7 +144,8 @@ docker compose up -d
 ```
 
 3. 打开 Web
-- 访问 `http://localhost:5000`
+- 访问 `http://localhost:5000/ui/`（根路径 `/` 会自动跳转）
+- 控制台为 Vue 3 SPA（深色/浅色/跟随系统三主题），仪表盘顶部可查看系统环境体检（FFmpeg / VAD / 语音识别 / 磁盘）
 - 首次进入建议先配置登录保护、平台账号和 YouTube Cookie
 
 默认会持久化目录：`config/`、`db/`、`downloads/`、`logs/`、`temp/`、`cookies/`。
@@ -188,7 +193,11 @@ pip install -r requirements.txt
 python app.py
 ```
 
-访问 `http://127.0.0.1:5000`。
+访问 `http://127.0.0.1:5000/ui/`。
+
+> 本地裸机运行注意：字幕转换与音视频流合并依赖 ffmpeg。若系统未安装，
+> 将静态 ffmpeg/ffprobe 二进制放入项目根目录 `ffmpeg/` 即可（该目录已被 gitignore）；
+> 缺失时任务会快速失败并提示，仪表盘「系统环境」卡片也会显示 FFmpeg 状态。
 
 ### 方案 C：Windows 便携包
 

@@ -157,7 +157,7 @@ const SECTIONS: SectionDef[] = [
       { key: 'WHISPER_BASE_URL', label: 'Whisper 地址', type: 'text', hint: '留空回退 OpenAI 地址' },
       { key: 'WHISPER_MODEL_NAME', label: 'Whisper 模型', type: 'text', placeholder: 'whisper-1' },
       { key: 'WHISPER_LANGUAGE', label: '强制语言', type: 'text', hint: '如 en / zh，空=自动检测' },
-      { key: 'WHISPER_PROMPT', label: '转写提示词', type: 'textarea', hint: '引导生成，减少幻觉', full: true },
+      { key: 'WHISPER_PROMPT', label: '转写提示词', type: 'textarea', hint: '引导生成，减少幻觉；部分 OpenAI 兼容端点（如 grok-stt 网关）不支持 prompt，填了会自动去掉重试', full: true },
       { key: 'WHISPER_TRANSLATE', label: '转写时翻译为英文', type: 'toggle' },
       { key: 'WHISPER_MAX_RETRIES', label: '转写重试次数', type: 'number' },
       { key: 'WHISPER_RETRY_DELAY_S', label: '重试延迟（秒）', type: 'number', step: '0.5' },

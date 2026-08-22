@@ -1261,7 +1261,7 @@ def init_db():
                 conn.rollback()
                 logger.warning("数据库升级：历史任务分区字段回填迁移失败，将在下次启动重试: %s", e2)
         else:
-            logger.info("数据库升级：历史任务分区字段回填迁移已执行，跳过")
+            logger.debug("数据库升级：历史任务分区字段回填迁移已执行，跳过")
 
         if 'asr_warning_message' not in columns:
             cursor.execute("ALTER TABLE tasks ADD COLUMN asr_warning_message TEXT")
@@ -2094,7 +2094,7 @@ def reset_stuck_tasks(skip_active=False, cancel_active=False):
             conn.commit()
             return reset_count
         else:
-            logger.info("没有发现卡住的任务")
+            logger.debug("没有发现卡住的任务")
             return 0
             
     except Exception as e:
@@ -2700,9 +2700,9 @@ class TaskProcessor:
             
             if not pending_tasks:
                 if active_task_ids:
-                    logger.info(f"当前没有可启动的pending任务（{len(active_task_ids)} 个任务线程处于活动状态）")
+                    logger.debug(f"当前没有可启动的pending任务（{len(active_task_ids)} 个任务线程处于活动状态）")
                 else:
-                    logger.info("没有pending任务需要启动")
+                    logger.debug("没有pending任务需要启动")
                 return
             
             # 检查当前是否有正在运行的任务
@@ -2737,7 +2737,7 @@ class TaskProcessor:
                 logger.info(f"检测到高内存使用，降低并发数至 {max_concurrent}")
                 
             if effective_running_count >= max_concurrent:
-                logger.info(
+                logger.debug(
                     f"当前有效运行任务数 {effective_running_count}（DB运行中 {len(running_task_ids)}，活动线程 {len(active_task_ids)}），"
                     f"达到并发限制 {max_concurrent}，暂不启动新任务"
                 )

@@ -1645,8 +1645,73 @@ def system_health():
         'bilibili_cookies': {'status': 'unknown', 'message': ''},
         'stuck_tasks': {'count': 0, 'tasks': []},
         'recent_errors': [],
+        'runtime_tools': {
+            'ffmpeg': {'status': 'unknown', 'path': None},
+            'ffprobe': {'status': 'unknown', 'path': None},
+            'vad': {'status': 'unknown', 'message': ''},
+            'asr': {'status': 'unknown', 'message': ''},
+            'disk': {'status': 'unknown', 'free_gb': None},
+        },
         'docker_volumes': {}
     }
+    
+    # 运行时依赖体检（ffmpeg/ffprobe/ASR/VAD/磁盘）
+    try:
+        from modules.ffmpeg_manager import get_ffmpeg_path, get_ffprobe_path, is_ffmpeg_usable
+        ffmpeg_path = get_ffmpeg_path()
+        health_status['runtime_tools']['ffmpeg'] = {
+            'status': 'ok' if (ffmpeg_path and is_ffmpeg_usable(ffmpeg_path)) else 'missing',
+            'path': ffmpeg_path or None,
+        }
+        ffprobe_path = get_ffprobe_path(ffmpeg_path=ffmpeg_path)
+        health_status['runtime_tools']['ffprobe'] = {
+            'status': 'ok' if ffprobe_path else 'missing',
+            'path': ffprobe_path or None,
+        }
+    except Exception:
+        health_status['runtime_tools']['ffmpeg'] = {'status': 'error', 'path': None}
+        health_status['runtime_tools']['ffprobe'] = {'status': 'error', 'path': None}
+
+    try:
+        import importlib.util
+        torch_ok = importlib.util.find_spec('torch') is not None
+        silero_ok = importlib.util.find_spec('silero_vad') is not None
+        if torch_ok and silero_ok:
+            health_status['runtime_tools']['vad'] = {'status': 'ok', 'message': 'silero-vad 可用'}
+        elif torch_ok:
+            health_status['runtime_tools']['vad'] = {'status': 'missing', 'message': 'silero-vad 未安装（torch 已装）'}
+        else:
+            health_status['runtime_tools']['vad'] = {'status': 'missing', 'message': 'silero-vad/torch 未安装，VAD 将走整段兜底'}
+    except Exception:
+        health_status['runtime_tools']['vad'] = {'status': 'error', 'message': ''}
+
+    try:
+        _health_config = load_config()
+        asr_key = bool(str(_health_config.get('WHISPER_API_KEY') or '').strip())
+        asr_base = str(_health_config.get('WHISPER_BASE_URL') or '').strip()
+        asr_model = str(_health_config.get('WHISPER_MODEL_NAME') or '').strip()
+        if asr_key and asr_base:
+            health_status['runtime_tools']['asr'] = {
+                'status': 'ok' if asr_model else 'warn',
+                'message': f'{asr_model or "默认"} @ {asr_base}',
+            }
+        elif asr_base:
+            health_status['runtime_tools']['asr'] = {'status': 'warn', 'message': '已配置端点但缺少 API Key'}
+        else:
+            health_status['runtime_tools']['asr'] = {'status': 'disabled', 'message': '未配置语音识别'}
+    except Exception:
+        health_status['runtime_tools']['asr'] = {'status': 'error', 'message': ''}
+
+    try:
+        import shutil
+        disk_usage = shutil.disk_usage(os.path.abspath(os.curdir))
+        free_gb = round(disk_usage.free / (1024 ** 3), 1)
+        health_status['runtime_tools']['disk'] = {
+            'status': 'ok' if free_gb >= 5 else 'warn',
+            'free_gb': free_gb,
+        }
+    except Exception:
+        health_status['runtime_tools']['disk'] = {'status': 'error', 'free_gb': None}
     
     # Docker环境特殊检查
     if is_docker:

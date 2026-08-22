@@ -212,6 +212,7 @@ class AsrApiClient:
             'timestamp_granularities',
             'timestamp granularities',
             'unsupported format',
+            'prompt',
         )
         rejection_markers = (
             'unsupported',
@@ -229,6 +230,31 @@ class AsrApiClient:
                 and any(marker in err_str for marker in rejection_markers)
             )
         )
+
+    @staticmethod
+    def _is_prompt_rejection(exc: Exception) -> bool:
+        """判断异常是否因端点拒绝 prompt 参数引起（兼容中文网关文案）。"""
+        err_str = str(getattr(exc, 'message', '') or exc).lower()
+        if 'prompt' not in err_str:
+            return False
+        status_code = getattr(exc, 'status_code', None)
+        if status_code is None:
+            response = getattr(exc, 'response', None)
+            status_code = getattr(response, 'status_code', None)
+        if status_code is not None and int(status_code) not in (400, 422):
+            return False
+        rejection_markers = (
+            'unsupported',
+            'not supported',
+            'invalid',
+            'unknown',
+            'unrecognized',
+            'not allowed',
+            'not permitted',
+            '不能',
+            '不支持',
+        )
+        return any(marker in err_str for marker in rejection_markers)
 
     @staticmethod
     def _validate_verbose_json_payload(payload: Any) -> Dict[str, Any]:
@@ -564,9 +590,25 @@ class AsrApiClient:
 
             if use_translation_endpoint is None:
                 use_translation_endpoint = bool(self.config.translate)
-            if use_translation_endpoint:
-                return self.client.audio.translations.create(**params)
-            return self.client.audio.transcriptions.create(**params)
+
+            def _call() -> Any:
+                if use_translation_endpoint:
+                    return self.client.audio.translations.create(**params)
+                return self.client.audio.transcriptions.create(**params)
+
+            try:
+                return _call()
+            except Exception as exc:
+                # 兼容 OpenAI 兼容网关：端点拒绝 prompt 参数时去掉 prompt 重试一次
+                if not include_prompt or not self._is_prompt_rejection(exc):
+                    raise
+                params.pop('prompt', None)
+                self.logger.info(
+                    "ASR 端点拒绝 prompt 参数（%s），已去掉 prompt 重试：%s",
+                    str(exc)[:160],
+                    type(exc).__name__,
+                )
+                return _call()
 
     def _build_whisper_transcriptions_url(self) -> str:
         """Build the /v1/audio/transcriptions URL for direct HTTP requests."""

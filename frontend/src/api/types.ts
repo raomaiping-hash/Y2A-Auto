@@ -78,6 +78,24 @@ export interface DashboardPayload {
   recent_tasks: RecentTask[]
 }
 
+export interface RuntimeToolStatus {
+  status: 'ok' | 'warn' | 'missing' | 'disabled' | 'error' | 'unknown'
+  path?: string | null
+  message?: string
+  free_gb?: number | null
+}
+
+export interface SystemHealthPayload {
+  runtime_tools?: {
+    ffmpeg?: RuntimeToolStatus
+    ffprobe?: RuntimeToolStatus
+    vad?: RuntimeToolStatus
+    asr?: RuntimeToolStatus
+    disk?: RuntimeToolStatus
+  }
+  [key: string]: unknown
+}
+
 export interface SessionPayload {
   authenticated: boolean
   password_protection_enabled: boolean

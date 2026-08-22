@@ -344,6 +344,29 @@ def _build_subtitle_download_args(
     ]
 
 
+def _require_ffmpeg_for_subtitles(
+    config: dict[str, Any] | None,
+    ffmpeg_location: str | None,
+    *,
+    skip_download: bool,
+) -> str | None:
+    """ffmpeg 预检：字幕转换（--convert-subs srt）强制依赖 ffmpeg。
+
+    返回错误消息（需要快速失败）或 None（无需拦截）。
+    Docker 环境由镜像自带 ffmpeg 二进制（走 PATH），视为可用。
+    """
+    if skip_download:
+        return None
+    if not bool((config or {}).get('YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED', False)):
+        return None
+    if bool(ffmpeg_location) or is_docker_env():
+        return None
+    return (
+        "缺少 ffmpeg：字幕下载后需转换为 srt（--convert-subs srt）。"
+        "请将静态 ffmpeg/ffprobe 二进制放入项目 ffmpeg/ 目录，或安装到系统 PATH。"
+    )
+
+
 def _is_format_selection_error(error_text: str | None) -> bool:
     """判断是否属于格式选择失败，而非视频不可访问。"""
     if not error_text:
@@ -375,8 +398,14 @@ def _looks_like_youtube_bot_challenge(error_text: str | None) -> bool:
 
 
 def _summarize_yt_dlp_error(stdout_text: str | None, stderr_text: str | None) -> str:
-    """从 yt-dlp 输出中提取更有价值的错误摘要。"""
-    candidates: list[str] = []
+    """从 yt-dlp 输出中提取更有价值的错误摘要。
+
+    优先返回最后一条 ERROR 行（如 "ERROR: ffmpeg not found"），
+    仅在没有真实错误行时才回退到 [download]/[youtube] 进度行，
+    避免 100% 下载进度覆盖真正的失败原因。
+    """
+    error_lines: list[str] = []
+    info_lines: list[str] = []
     for text in (stderr_text, stdout_text):
         if not text:
             continue
@@ -385,12 +414,14 @@ def _summarize_yt_dlp_error(stdout_text: str | None, stderr_text: str | None) ->
             if not line:
                 continue
             if line.startswith("ERROR:"):
-                candidates.append(line)
+                error_lines.append(line)
             elif "[youtube]" in line or "[download]" in line:
-                candidates.append(line)
+                info_lines.append(line)
 
-    if candidates:
-        return candidates[-1]
+    if error_lines:
+        return error_lines[-1]
+    if info_lines:
+        return info_lines[-1]
 
     merged = (stderr_text or stdout_text or "").strip()
     if not merged:
@@ -812,6 +843,15 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
         _append_yt_dlp_network_args(cmd, proxy_url=proxy_url, cookies_path=cookies_path)
         if proxy_url:
             logger.info("下载 YouTube 时已启用代理")
+
+        # ffmpeg 预检：字幕转换（--convert-subs srt）强制依赖 ffmpeg。
+        # 缺失时快速失败并给出明确指引，避免进入无意义的三次重试循环。
+        ffmpeg_error = _require_ffmpeg_for_subtitles(
+            config, ffmpeg_location, skip_download=skip_download
+        )
+        if ffmpeg_error:
+            logger.error(ffmpeg_error)
+            return False, ffmpeg_error
         
         # 配置下载线程数
         download_threads = config.get('YOUTUBE_DOWNLOAD_THREADS', 4)

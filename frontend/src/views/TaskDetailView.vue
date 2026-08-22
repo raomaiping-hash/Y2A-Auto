@@ -213,17 +213,35 @@ async function restoreCover() {
 }
 
 /* ---- 日志 ---- */
+const logBlockRef = ref<HTMLElement | null>(null)
+let logPinnedBottom = true
+
+function isNearLogBottom(): boolean {
+  const el = logBlockRef.value
+  if (!el) return true
+  return el.scrollHeight - el.scrollTop - el.clientHeight < 60
+}
+
 async function fetchLog() {
   if (!logOpen.value) return
   logLoading.value = true
   try {
     const res = await tasksApi.log(taskId.value)
+    if (isNearLogBottom()) logPinnedBottom = true
     logContent.value = res.content
+    // 仅当用户停留在底部附近时自动滚动到底
+    if (logPinnedBottom && logBlockRef.value) {
+      logBlockRef.value.scrollTop = logBlockRef.value.scrollHeight
+    }
   } catch {
     /* 忽略轮询错误 */
   } finally {
     logLoading.value = false
   }
+}
+
+function onLogScroll() {
+  logPinnedBottom = isNearLogBottom()
 }
 
 watch(logOpen, (open) => {
@@ -376,7 +394,7 @@ function formatTime(dt?: string): string {
               <UiToggle v-model="logOpen" label="自动刷新" />
             </div>
             <div v-if="logOpen" class="card-body">
-              <div class="code-block log-block">
+              <div ref="logBlockRef" class="code-block log-block" @scroll.passive="onLogScroll">
                 <template v-if="logContent">{{ logContent }}</template>
                 <span v-else-if="logLoading" class="text-muted">加载中…</span>
                 <span v-else class="text-muted">暂无日志输出</span>
