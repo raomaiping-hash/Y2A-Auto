@@ -70,11 +70,11 @@ class SubtitleEmbedOnlyFlowTests(unittest.TestCase):
         processor._embed_subtitle_in_video.assert_called_once_with(
             self.task_id,
             self.video_path,
-            subtitle_path,
+            subtitle_path[:-4] + '.cleaned.srt',
             unittest.mock.ANY,
         )
         self.assertEqual(task['video_path_local'], self.embedded_path)
-        self.assertEqual(task['subtitle_path_original'], subtitle_path)
+        self.assertEqual(task['subtitle_path_original'], subtitle_path[:-4] + '.cleaned.srt')
         self.assertIsNone(task['subtitle_path_translated'])
 
     def test_prepare_upload_burns_existing_subtitle_when_translation_disabled(self):
