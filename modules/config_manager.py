@@ -147,6 +147,10 @@ DEFAULT_CONFIG = {
     "SUBTITLE_QC_THRESHOLD": 0.60,  # 通过阈值（0-1），仅作为 AI 复核分数下限（质量优先）
     "SUBTITLE_QC_SAMPLE_MAX_ITEMS": 80,  # AI 抽样条目上限（实际会按边界程度自适应收缩）
     "SUBTITLE_QC_MAX_CHARS": 9000,  # AI 送检最大字符数上限（实际会按边界程度自适应收缩）
+    # VideoLingo 风格字幕翻译增强（可配置开关，默认保守）
+    "SUBTITLE_TRANSLATE_CONTEXT_ENABLED": False,  # 上下文感知：翻译注入前 3 条 + 后 2 条上下文
+    "SUBTITLE_GLOSSARY_ENABLED": False,  # 术语表提取：翻译前抽取主题摘要 + 统一术语译法（一次 LLM 调用）
+    "SUBTITLE_TRANSLATE_REFLECT_ENABLED": False,  # 两阶段翻译：忠实直译 -> 自然意译（双倍 LLM 调用，慢网关慎开）
     # 并发控制配置
     "MAX_CONCURRENT_TASKS": 2,  # 最大并发任务数
     "MAX_CONCURRENT_UPLOADS": 1,  # 最大并发上传数

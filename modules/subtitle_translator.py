@@ -8,7 +8,7 @@ import time
 import logging
 import gc  # 添加垃圾回收模块以优化内存使用
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from logging.handlers import RotatingFileHandler
 import concurrent.futures
@@ -29,6 +29,15 @@ logger = logging.getLogger('subtitle_translator')
 _CHINESE_CHAR_RE = re.compile(r'[\u4e00-\u9fff]')
 SUBTITLE_RESIDUAL_UNTRANSLATED_RATIO_THRESHOLD = 0.15
 SUBTITLE_RESIDUAL_UNTRANSLATED_COUNT_THRESHOLD = 3
+
+
+def _to_bool(value) -> bool:
+    """安全地将配置值转换为布尔值（兼容字符串 'true'/'1'/'on'/'yes'）。"""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in ('true', '1', 'on', 'yes')
 
 
 def _should_fail_translation_residue(total_items: int, unresolved_count: int) -> bool:
@@ -134,6 +143,10 @@ class TranslationConfig:
     prompt_text: str = ""         # 字幕翻译主 Prompt 用户文本
     prompt_strict_mode: str = "builtin"  # 字幕翻译严格补救 Prompt 模式
     prompt_strict_text: str = ""  # 字幕翻译严格补救 Prompt 用户文本
+    # VideoLingo 风格增强（可配置开关，默认保守）
+    context_enabled: bool = False          # 上下文感知：注入前/后文 + 主题摘要 + 术语
+    glossary_enabled: bool = False         # 术语表提取：翻译前先抽取统一译法
+    reflect_translate: bool = False        # 两阶段翻译：忠实直译 -> 自然意译（双倍 LLM 调用）
 
 class SubtitleReader:
     """字幕文件读取器"""
@@ -411,8 +424,25 @@ class LLMRequester:
         except Exception as e:
             self.logger.error(f"初始化OpenAI客户端失败: {e}")
     
-    def translate_batch(self, texts: List[str], target_language: str, batch_id: str = "") -> List[str]:
-        """批量翻译文本，使用结构化JSON输出"""
+    def translate_batch(
+        self,
+        texts: List[str],
+        target_language: str,
+        batch_id: str = "",
+        *,
+        previous_text: Optional[List[str]] = None,
+        after_text: Optional[List[str]] = None,
+        summary: Optional[str] = None,
+        terms: Optional[List[Dict[str, str]]] = None,
+        reflect_translate: bool = False,
+    ) -> List[str]:
+        """批量翻译文本，使用结构化JSON输出。
+
+        VideoLingo 风格增强参数（可配置开关）：
+        - previous_text/after_text: 前后文注入，提升语境连贯性
+        - summary/terms: 主题摘要与术语表，保证术语前后一致
+        - reflect_translate: 两阶段翻译（忠实直译 -> 自然意译），双倍 LLM 调用
+        """
         if not texts:
             return []
         if not self.client:
@@ -423,7 +453,13 @@ class LLMRequester:
             log_as_info = self._should_log_batch(batch_id)
             # 构建翻译提示词
             system_prompt = self._build_structured_system_prompt(target_language)
-            user_prompt = self._build_structured_user_prompt(texts)
+            user_prompt = self._build_structured_user_prompt(
+                texts,
+                previous_text=previous_text,
+                after_text=after_text,
+                summary=summary,
+                terms=terms,
+            )
             
             model_name = self.openai_config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo')
             
@@ -451,6 +487,33 @@ class LLMRequester:
                     logging.INFO if log_as_info else logging.DEBUG,
                     f"批次 {batch_id} 翻译完成，耗时: {response_time:.2f}秒"
                 )
+            
+            # 两阶段翻译：忠实直译 -> 自然意译（默认关闭，双倍 LLM 调用）
+            if reflect_translate and translations and all(t.strip() for t in translations):
+                try:
+                    refine_user_prompt = self._build_structured_user_prompt(
+                        [t for t in translations],
+                        previous_text=previous_text,
+                        after_text=after_text,
+                        summary=summary,
+                        terms=terms,
+                        is_reflect_pass=True,
+                    )
+                    refined = self._request_translation_result(
+                        model_name=model_name,
+                        system_prompt=system_prompt,
+                        user_prompt=refine_user_prompt,
+                        expected_count=len(translations),
+                        batch_id=f"{batch_id}_reflect",
+                        scene_name='subtitle_translate_reflect',
+                    )
+                    if refined and len(refined) == len(translations):
+                        translations = refined
+                        with self._log_lock:
+                            self.logger.info(f"批次 {batch_id} 两阶段意译完成")
+                except Exception as refl_exc:
+                    with self._log_lock:
+                        self.logger.warning(f"批次 {batch_id} 两阶段意译失败，保留直译结果: {refl_exc}")
             
             return translations
             
@@ -609,20 +672,76 @@ class LLMRequester:
             target_language=target_language,
         )
     
-    def _build_structured_user_prompt(self, texts: List[str]) -> str:
-        """构建结构化用户提示词。"""
-        return json.dumps(
-            {
-                "task": "subtitle_translation",
-                "requirements": {
-                    "one_to_one_alignment": True,
-                    "no_cross_item_carryover": True,
-                    "keep_fragment_boundaries": True,
-                },
-                "texts": texts,
+    def _build_structured_user_prompt(
+        self,
+        texts: List[str],
+        *,
+        previous_text: Optional[List[str]] = None,
+        after_text: Optional[List[str]] = None,
+        summary: Optional[str] = None,
+        terms: Optional[List[Dict[str, str]]] = None,
+        is_reflect_pass: bool = False,
+    ) -> str:
+        """构建结构化用户提示词。
+
+        可选注入 VideoLingo 风格上下文：前文、后文、主题摘要、术语表。
+        is_reflect_pass=True 时用于两阶段翻译的第二阶段（意译改进）。
+        """
+        payload: Dict[str, Any] = {
+            "task": "subtitle_translation",
+            "requirements": {
+                "one_to_one_alignment": True,
+                "no_cross_item_carryover": True,
+                "keep_fragment_boundaries": True,
             },
-            ensure_ascii=False,
-        )
+            "texts": texts,
+        }
+        if previous_text is not None:
+            payload["previous_context"] = previous_text
+        if after_text is not None:
+            payload["subsequent_context"] = after_text
+        if summary:
+            payload["summary"] = summary
+        if terms:
+            payload["terminology"] = terms
+        if is_reflect_pass:
+            payload["task"] = "subtitle_refinement"
+        return json.dumps(payload, ensure_ascii=False)
+
+    def _parse_glossary_json(self, raw_text) -> Dict[str, Any]:
+        """容错解析术语表 JSON：{summary, terms:[{src,tgt,note}]}。失败返回空字典。"""
+        try:
+            if not raw_text:
+                return {}
+            data = raw_text
+            if isinstance(raw_text, dict):
+                data = raw_text
+            elif isinstance(raw_text, str):
+                # 优先直接尝试 JSON 解析，失败再走通用消息提取
+                try:
+                    data = json.loads(raw_text)
+                except Exception:
+                    data = extract_chat_message_json(raw_text, expected_type=dict)
+            else:
+                data = raw_text
+            if not isinstance(data, dict):
+                return {}
+            summary = str(data.get('summary', '') or '').strip()
+            terms_raw = data.get('terms') or []
+            terms = []
+            if isinstance(terms_raw, list):
+                for t in terms_raw:
+                    if isinstance(t, dict):
+                        terms.append({
+                            'src': str(t.get('src', '') or '').strip(),
+                            'tgt': str(t.get('tgt', '') or '').strip(),
+                            'note': str(t.get('note', '') or '').strip(),
+                        })
+            # 过滤掉空术语
+            terms = [t for t in terms if t['src'] and t['tgt']]
+            return {'summary': summary, 'terms': terms}
+        except Exception:
+            return {}
 
     def _parse_structured_translation_result(self, message, expected_count: int, batch_id: str) -> List[str]:
         """解析结构化翻译结果"""
@@ -916,14 +1035,33 @@ class SubtitleTranslator:
             
             # 创建批次
             batches = []
+            # VideoLingo 风格增强：翻译前先构建术语表（一次性），并缓存摘要/术语到批次上下文
+            glossary = None
+            if getattr(self.config, 'glossary_enabled', False):
+                glossary = self._build_glossary(items)
             for i in range(0, total_items, batch_size):
                 batch_items = items[i:i + batch_size]
                 batch_texts = [item.source_text for item in batch_items]
+                # 上下文感知：前 3 条 + 后 2 条（VideoLingo get_previous/get_after 思路）
+                previous_text = None
+                after_text = None
+                if getattr(self.config, 'context_enabled', False):
+                    prev = items[max(0, i - 3):i]
+                    after = items[i + batch_size:i + batch_size + 2]
+                    if prev:
+                        previous_text = [it.source_text for it in prev]
+                    if after:
+                        after_text = [it.source_text for it in after]
                 batches.append({
                     'batch_id': f"{self.task_id}_{i//batch_size + 1}",
                     'start_index': i,
                     'items': batch_items,
-                    'texts': batch_texts
+                    'texts': batch_texts,
+                    'previous_text': previous_text,
+                    'after_text': after_text,
+                    'summary': (glossary.get('summary') if glossary else None),
+                    'terms': (glossary.get('terms') if glossary else None),
+                    'reflect_translate': getattr(self.config, 'reflect_translate', False),
                 })
             
             # 进度跟踪
@@ -947,6 +1085,11 @@ class SubtitleTranslator:
                 start_index = batch_info['start_index']
                 batch_items = batch_info['items']
                 batch_texts = batch_info['texts']
+                previous_text = batch_info.get('previous_text')
+                after_text = batch_info.get('after_text')
+                summary = batch_info.get('summary')
+                terms = batch_info.get('terms')
+                reflect_translate = batch_info.get('reflect_translate', False)
                 
                 # 翻译当前批次，带重试机制
                 for retry in range(self.config.max_retries):
@@ -956,7 +1099,12 @@ class SubtitleTranslator:
                         translations = self.llm_requester.translate_batch(
                             batch_texts, 
                             self.config.target_language,
-                            batch_id=batch_id
+                            batch_id=batch_id,
+                            previous_text=previous_text,
+                            after_text=after_text,
+                            summary=summary,
+                            terms=terms,
+                            reflect_translate=reflect_translate,
                         )
                         
                         # 将翻译结果赋值给字幕项
@@ -1042,6 +1190,38 @@ class SubtitleTranslator:
             import traceback
             self.logger.error(traceback.format_exc())
             return False
+
+    def _build_glossary(self, items: List[SubtitleItem]) -> Dict[str, Any]:
+        """翻译前置：用一次 LLM 调用提取全片主题摘要 + 关键术语表（VideoLingo step4_1）。
+
+        返回 {"summary": str, "terms": [{"src","tgt","note"}, ...]}。
+        任何失败都返回空字典并降级为无上下文翻译，不阻塞主流程。
+        """
+        try:
+            if not self.llm_requester or not self.llm_requester.client:
+                return {}
+            # 取前 N 条非空文本作为提取样本，避免整片超长
+            sample = [it.source_text for it in items if (it.source_text or '').strip()]
+            if not sample:
+                return {}
+            from .prompt_manager import get_glossary_prompt
+            system_prompt = get_glossary_prompt(self.config.target_language)
+            user_text = '\n'.join(sample[:120])
+            response = self.llm_requester._create_translation_completion(
+                model_name=self.llm_requester.openai_config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo'),
+                system_prompt=system_prompt,
+                user_prompt=user_text,
+                scene_name='subtitle_glossary',
+                json_mode=False,
+            )
+            if not getattr(response, 'choices', None):
+                return {}
+            raw_text = get_chat_message_text(response.choices[0].message)
+            data = self.llm_requester._parse_glossary_json(raw_text)
+            return data or {}
+        except Exception as exc:
+            self.logger.warning(f"字幕术语表提取失败，降级为无上下文翻译: {exc}")
+            return {}
 
     def _likely_untranslated(self, src: str, dst: str) -> bool:
         """判断翻译是否可能未生效：空串、与原文相同、非中文比例过高。
@@ -1321,6 +1501,9 @@ def create_translator_from_config(app_config: Dict, task_id: Optional[str] = Non
             prompt_text=prompt_text,
             prompt_strict_mode=prompt_strict_mode,
             prompt_strict_text=prompt_strict_text,
+            context_enabled=_to_bool(app_config.get('SUBTITLE_TRANSLATE_CONTEXT_ENABLED', False)),
+            glossary_enabled=_to_bool(app_config.get('SUBTITLE_GLOSSARY_ENABLED', False)),
+            reflect_translate=_to_bool(app_config.get('SUBTITLE_TRANSLATE_REFLECT_ENABLED', False)),
         )
         
         if not translation_config.api_key:
