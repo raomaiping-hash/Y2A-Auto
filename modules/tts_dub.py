@@ -16,7 +16,9 @@ import base64
 import logging
 import math
 import os
+import shutil
 import subprocess
+import tempfile
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -243,7 +245,7 @@ def place_audio_at(src: str, start_s: float, out_wav: str, ffmpeg: str, logger: 
 def build_duck_track(orig_wav: str, cue_windows: List[Tuple[float, float]], out_wav: str, ffmpeg: str, logger: logging.Logger) -> None:
     """压低模式：语音时间窗内原轨降 18dB，其余不变。"""
     if not cue_windows:
-        shutil_copy(orig_wav, out_wav)
+        copy_file(orig_wav, out_wav)
         return
     filters = []
     for start_s, end_s in cue_windows:
@@ -256,15 +258,14 @@ def build_duck_track(orig_wav: str, cue_windows: List[Tuple[float, float]], out_
     ], logger)
 
 
-def shutil_copy(src: str, dst: str) -> None:
-    import shutil
+def copy_file(src: str, dst: str) -> None:
     shutil.copyfile(src, dst)
 
 
 def mix_tracks(base_wav: str, overlay_wavs: List[str], out_wav: str, ffmpeg: str, logger: logging.Logger) -> None:
     """叠加多条已定位轨道到基底上（amix，归一化 + 动态响度）。"""
     if not overlay_wavs:
-        shutil_copy(base_wav, out_wav)
+        copy_file(base_wav, out_wav)
         return
     cmd = [ffmpeg, '-y']
     inputs = ['-i', base_wav]
@@ -467,6 +468,17 @@ def build_dubbed_audio(
 
         base_track: Optional[str] = None
         if bg_mode == 'separate':
+            # 复用上次尝试已分离的伴奏（重跑不重复推理）
+            cached = [
+                os.path.join(tmp_dir, f)
+                for f in sorted(os.listdir(tmp_dir))
+                if 'instrumental' in f.lower() and f.lower().endswith('.wav')
+                and os.path.getsize(os.path.join(tmp_dir, f)) > 1024
+            ]
+            if cached:
+                base_track = cached[0]
+                logger.info('背景处理：复用上次分离结果 %s', os.path.basename(base_track))
+        if bg_mode == 'separate' and base_track is None:
             instrumental = separate_instrumental(
                 orig_wav, tmp_dir, str(config.get('TTS_DUB_SEPARATION_MODEL') or _DEFAULT_SEPARATION_MODEL), logger,
             )
