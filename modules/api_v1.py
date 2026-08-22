@@ -59,6 +59,7 @@ from .task_manager import (
     delete_task,
     force_upload_task,
     get_db_connection,
+    get_global_task_processor,
     get_metadata_translation_retry_block_reason,
     get_task,
     get_tasks_by_status,
@@ -68,6 +69,7 @@ from .task_manager import (
     retry_failed_tasks,
     retry_metadata_translation_task,
     resolve_cookie_file_path,
+    setup_task_logger,
     start_task,
     unregister_task_updates_listener,
     update_task,
@@ -582,8 +584,6 @@ def task_reprocess(task_id):
 @api_protected
 def task_dub(task_id):
     """用现有视频+字幕文件一次性生成配音（后台线程执行，无需整条管线重跑）。"""
-    from .task_manager import setup_task_logger
-
     config = load_config()
     api_key = str(config.get('TTS_DUB_API_KEY') or '').strip()
     if not api_key:
@@ -608,7 +608,6 @@ def task_dub(task_id):
     logger = setup_task_logger(task_id)
     update_task(task_id, status='dubbing_audio')
 
-    from .task_manager import get_global_task_processor, setup_task_logger, update_task
     processor = get_global_task_processor(config)
 
     def _dub_worker():
