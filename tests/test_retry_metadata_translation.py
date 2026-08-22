@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import app as web_app
 from modules import task_manager as tm
+from modules import api_v1 as av
 
 
 class RetryMetadataTranslationTests(unittest.TestCase):
@@ -168,7 +169,7 @@ class RetryMetadataTranslationTests(unittest.TestCase):
         for key, value in original.items():
             self.assertEqual(task.get(key), value, key)
 
-    def test_retry_translation_route_schedules_eligible_task(self):
+    def test_retry_translation_api_schedules_eligible_task(self):
         task = {
             'id': 'route-success',
             'status': tm.TASK_STATES['AWAITING_REVIEW'],
@@ -180,60 +181,69 @@ class RetryMetadataTranslationTests(unittest.TestCase):
             'TRANSLATE_TITLE': True,
             'OPENAI_API_KEY': 'key',
         }
-        with patch.object(web_app, 'get_task', return_value=task), \
-             patch.object(web_app, 'load_config', return_value=config), \
-             patch.object(web_app, 'retry_metadata_translation_task', return_value=True) as retry_mock:
-            response = web_app.app.test_client().post('/tasks/route-success/retry_translation')
+        with patch.object(av, 'get_task', return_value=task), \
+             patch.object(av, 'load_config', return_value=config), \
+             patch.object(av, 'is_metadata_translation_retryable', return_value=True), \
+             patch.object(av, 'get_metadata_translation_retry_block_reason', return_value=None), \
+             patch.object(av, '_csrf_token_valid', return_value=True), \
+             patch.object(av, 'retry_metadata_translation_task', return_value=True) as retry_mock:
+            response = web_app.app.test_client().post('/api/v1/tasks/route-success/retry_translation')
 
-        self.assertEqual(response.status_code, 302)
-        self.assertTrue(response.headers['Location'].endswith('/manual_review'))
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()['success'])
         retry_mock.assert_called_once_with('route-success', config)
 
-    def test_retry_translation_route_rejects_invalid_current_config(self):
+    def test_retry_translation_api_rejects_invalid_current_config(self):
         task = {
             'id': 'route-disabled',
             'status': tm.TASK_STATES['AWAITING_REVIEW'],
             'error_category': tm.METADATA_TRANSLATION_ERROR_CATEGORY,
             'video_title_original': 'Original title',
         }
-        with patch.object(web_app, 'get_task', return_value=task), \
-             patch.object(web_app, 'load_config', return_value={'password_protection_enabled': False}), \
-             patch.object(web_app, 'retry_metadata_translation_task') as retry_mock:
-            response = web_app.app.test_client().post('/tasks/route-disabled/retry_translation')
+        with patch.object(av, 'get_task', return_value=task), \
+             patch.object(av, 'load_config', return_value={'password_protection_enabled': False}), \
+             patch.object(av, 'is_metadata_translation_retryable', return_value=True), \
+             patch.object(av, 'get_metadata_translation_retry_block_reason',
+                          return_value='当前未启用可用的标题或简介自动翻译，无法重新翻译。'), \
+             patch.object(av, '_csrf_token_valid', return_value=True), \
+             patch.object(av, 'retry_metadata_translation_task') as retry_mock:
+            response = web_app.app.test_client().post('/api/v1/tasks/route-disabled/retry_translation')
 
-        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.status_code, 400)
         retry_mock.assert_not_called()
 
-    def test_edit_task_clears_error_category(self):
+    def test_edit_task_api_clears_error_category(self):
         task = {
             'id': 'edited-review-task',
             'status': tm.TASK_STATES['AWAITING_REVIEW'],
             'upload_target': 'acfun',
             'error_category': tm.METADATA_TRANSLATION_ERROR_CATEGORY,
         }
-        with patch.object(web_app, 'get_task', return_value=task), \
-             patch.object(web_app, 'load_config', return_value={'password_protection_enabled': False}), \
-             patch.object(web_app, 'update_task', return_value=True) as update_mock:
-            response = web_app.app.test_client().post('/tasks/edited-review-task/edit', data={
+        with patch.object(av, 'get_task', return_value=task), \
+             patch.object(av, 'load_config', return_value={'password_protection_enabled': False}), \
+             patch.object(av, '_csrf_token_valid', return_value=True), \
+             patch.object(av, 'is_metadata_translation_retryable', return_value=False), \
+             patch.object(av, 'update_task', return_value=True) as update_mock:
+            response = web_app.app.test_client().patch('/api/v1/tasks/edited-review-task', json={
                 'video_title_translated': '人工标题',
                 'description_translated': '人工简介',
                 'selected_partition_id_acfun': '1',
-                'tags_json': '[]',
+                'tags': [],
             })
 
-        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.status_code, 200)
         self.assertIsNone(update_mock.call_args.kwargs['error_category'])
 
-    def test_manual_review_template_includes_server_side_eligibility_and_data_loss_warning(self):
+    def test_manual_review_ui_includes_server_side_eligibility_and_data_loss_warning(self):
         root = pathlib.Path(__file__).resolve().parents[1]
-        template = (root / 'templates' / 'manual_review.html').read_text(encoding='utf-8')
-        app_source = (root / 'app.py').read_text(encoding='utf-8')
+        view = (root / 'frontend' / 'src' / 'views' / 'ManualReviewView.vue').read_text(encoding='utf-8')
+        api_source = (root / 'modules' / 'api_v1.py').read_text(encoding='utf-8')
 
-        self.assertIn('{% if task.can_retry_translation %}', template)
-        self.assertIn('id="retryTranslationForm" method="post"', template)
-        self.assertIn('已手动修改的标题、简介、标签和分区选择将被清空并重新生成。', template)
-        self.assertIn("@app.route('/tasks/<task_id>/retry_translation', methods=['POST'])", app_source)
-        self.assertIn('if not is_metadata_translation_retryable(task):', app_source)
+        self.assertIn('task.can_retry_translation', view)
+        self.assertIn('重试自动翻译', view)
+        self.assertIn('已手动修改的标题、简介、标签和分区选择将被清空并重新生成。', view)
+        self.assertIn("@api_bp.post('/tasks/<task_id>/retry_translation')", api_source)
+        self.assertIn('if not is_metadata_translation_retryable(task):', api_source)
 
 
 if __name__ == '__main__':

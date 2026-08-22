@@ -13,10 +13,13 @@ class DeleteDownloadsAfterUploadConfigTests(unittest.TestCase):
         self.assertFalse(DEFAULT_CONFIG['DELETE_DOWNLOAD_FILES_AFTER_UPLOAD'])
 
     def test_settings_page_exposes_option_and_save_handler_tracks_checkbox(self):
-        template = (ROOT / 'templates' / 'settings.html').read_text(encoding='utf-8')
+        view = (ROOT / 'frontend' / 'src' / 'views' / 'SettingsView.vue').read_text(encoding='utf-8')
         app_source = (ROOT / 'app.py').read_text(encoding='utf-8')
 
-        self.assertIn('name="DELETE_DOWNLOAD_FILES_AFTER_UPLOAD"', template)
+        # 新版 SPA 设置页的字段列表中暴露该选项
+        self.assertIn("'DELETE_DOWNLOAD_FILES_AFTER_UPLOAD'", view)
+        self.assertIn('上传后删除下载文件', view)
+        # 后端设置保存处理器仍跟踪该复选框
         self.assertIn("'DELETE_DOWNLOAD_FILES_AFTER_UPLOAD'", app_source)
 
     def test_upload_cleanup_is_guarded_by_option_for_both_platform_handlers(self):

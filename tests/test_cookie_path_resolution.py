@@ -25,14 +25,16 @@ class CookiePathResolutionTests(unittest.TestCase):
 
     def test_bilibili_call_sites_use_shared_cookie_path_resolver(self):
         root = pathlib.Path(__file__).resolve().parents[1]
-        app_tree = ast.parse((root / "app.py").read_text(encoding="utf-8"))
+        api_tree = ast.parse(
+            (root / "modules" / "api_v1.py").read_text(encoding="utf-8")
+        )
         task_manager_tree = ast.parse(
             (root / "modules" / "task_manager.py").read_text(encoding="utf-8")
         )
 
         functions = {
             node.name: node
-            for tree in (app_tree, task_manager_tree)
+            for tree in (api_tree, task_manager_tree)
             for node in ast.walk(tree)
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
             and node.name in {

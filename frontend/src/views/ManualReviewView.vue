@@ -55,6 +55,18 @@ async function forceUploadTask(task: Task) {
   }
 }
 
+function askRetry(task: Task) {
+  confirmState.value = {
+    open: true,
+    title: '重试自动翻译',
+    message: '重试后，已手动修改的标题、简介、标签和分区选择将被清空并重新生成。确定继续吗？',
+    action: async () => {
+      const r = await tasksApi.retryTranslation(task.id)
+      toast.success(r.message)
+    },
+  }
+}
+
 function askDelete(task: Task) {
   confirmState.value = {
     open: true,
@@ -106,7 +118,7 @@ const reviewCount = computed(() => tasks.value.length)
             <TaskStatusBadge :status="task.status" />
           </div>
           <div class="flex gap-2">
-            <button v-if="task.can_retry_translation" class="btn btn-secondary btn-sm" @click="tasksApi.retryTranslation(task.id).then(r => { toast.success(r.message); load() }).catch(e => toast.error('重试失败', e.message))">
+            <button v-if="task.can_retry_translation" class="btn btn-secondary btn-sm" @click="askRetry(task)">
               <i class="bi bi-translate"></i> 重试翻译
             </button>
             <button class="btn btn-success btn-sm" @click="forceUploadTask(task)">
