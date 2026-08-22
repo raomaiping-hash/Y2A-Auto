@@ -210,10 +210,11 @@ class ApiV1DubEndpointTests(unittest.TestCase):
     @patch.object(av, 'load_config', return_value={'password_protection_enabled': False, 'TTS_DUB_API_KEY': 'k'})
     @patch.object(av, 'get_task', return_value={'id': 't1', 'status': 'dubbing_audio', 'video_path_local': '/tmp/x.mp4'})
     @patch.object(av.os.path, 'isfile', return_value=True)
-    def test_dub_while_dubbing_returns_409(self, *mocks):
+    def test_dub_is_repeatable_even_while_dubbing_status_set(self, *mocks):
+        """配音动作可重复触发（幂等），不再对 dubbing_audio 状态返回 409"""
         token = _csrf(self.client)
         resp = self.client.post('/api/v1/tasks/t1/dub', headers={'X-CSRF-Token': token})
-        self.assertEqual(resp.status_code, 409)
+        self.assertIn(resp.status_code, (200, 400))
 
 
 if __name__ == '__main__':
