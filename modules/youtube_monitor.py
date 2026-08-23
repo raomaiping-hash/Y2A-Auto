@@ -860,7 +860,7 @@ class YouTubeMonitor:
             logger.info("开始获取视频数据...")
             # 每次运行前重置错误标记
             self._last_fetch_had_errors = False
-            videos = self._fetch_trending_videos(config)
+            videos = self._fetch_videos(config)
             logger.info(f"获取到 {len(videos)} 个视频")
             
             # 筛选视频
@@ -869,27 +869,35 @@ class YouTubeMonitor:
             logger.info(f"筛选后剩余 {len(filtered_videos)} 个视频")
             
             # 历史搬运模式需要考虑偏移量
+            # 记录应用偏移量前的完整筛选结果，供进度推进与"完成"判定使用。
+            full_filtered_videos = filtered_videos
             if config.get('channel_mode') == 'historical':
                 current_offset = config.get('historical_offset', 0)
                 if current_offset > 0:
                     logger.info(f"历史搬运模式，跳过前 {current_offset} 个视频")
                     filtered_videos = filtered_videos[current_offset:]
                     logger.info(f"应用偏移量后剩余 {len(filtered_videos)} 个视频")
-            
+
             # 保存到历史记录
             added_count = 0
             processed_count = 0
+            # 本轮实际"消费"的候选数（含被去重跳过的、含未入队的）。
+            # 历史 offset 只由它推进，与 added_count 解耦，避免 offset 漂移/重扫。
+            consumed_count = 0
             auto_add_enabled = config.get('auto_add_to_tasks', False)
-            
+
             # 获取添加到任务队列的数量限制
             # 所有模式都使用rate_limit_requests来控制每次添加的视频数量
             max_add_to_tasks = config.get('rate_limit_requests', 20) if auto_add_enabled else 0
-            
+
             logger.info(f"开始处理视频，自动添加到任务队列: {'是' if auto_add_enabled else '否'}")
             if auto_add_enabled:
                 logger.info(f"本次最大添加到任务队列数量: {max_add_to_tasks}")
-            
+
             for video in filtered_videos:
+                # 每看到一个候选即计入消费，用于历史 offset 推进（含去重跳过）。
+                consumed_count += 1
+
                 # 先去重：已处理过的直接跳过，不参与本轮统计
                 if self._is_video_processed(video['id'], config_id):
                     logger.debug(f"视频已处理过，跳过: {video['title']}")
@@ -920,21 +928,21 @@ class YouTubeMonitor:
                 if auto_add_enabled and added_count >= max_add_to_tasks:
                     logger.info(f"已达到本次添加上限 {max_add_to_tasks}，剩余视频将在下次运行时处理")
                     break
-            
+
             # 更新最后运行时间（若本次抓取存在错误则跳过，避免漏掉新视频）
             if not self._last_fetch_had_errors:
                 self._update_last_run_time(config_id)
             else:
                 logger.warning("本次抓取存在错误，跳过更新last_run_time以避免漏掉新视频")
-            
+
             logger.info(f"监控任务完成 - 配置: {config['name']}, "
-                       f"处理新视频: {processed_count}, 添加到任务队列: {added_count}")
-            
+                       f"处理新视频: {processed_count}, 添加到任务队列: {added_count}, "
+                       f"本轮消费候选: {consumed_count}")
+
             # 更新历史搬运进度（如果是历史模式）
             if config.get('channel_mode') == 'historical':
-                # 获取应用偏移量前的完整筛选结果
-                original_filtered = self._filter_videos(videos, config)
-                self._update_historical_progress(config_id, original_filtered, added_count)
+                # 使用应用偏移量前的完整筛选结果推进 offset。
+                self._update_historical_progress(config_id, full_filtered_videos, consumed_count)
             
             return True, f"监控完成，处理了 {processed_count} 个新视频，添加了 {added_count} 个到任务队列"
             
@@ -942,8 +950,12 @@ class YouTubeMonitor:
             logger.error(f"监控任务执行失败 - 配置: {config['name']} (ID: {config_id}), 错误: {str(e)}")
             return False, self._format_run_error_message(e)
     
-    def _fetch_trending_videos(self, config: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """获取视频"""
+    def _fetch_videos(self, config: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """获取视频（按配置路由到频道/搜索/时间范围抓取）。
+
+        注意：此方法名虽是"获取视频"，实际是路由分发器，根据配置
+        选择 _fetch_channel_videos / _fetch_search_videos 等实现。
+        """
         try:
             # 设置时间范围
             published_after: Optional[str] = None
@@ -1822,19 +1834,26 @@ class YouTubeMonitor:
             logger.error(f"计算历史搬运时间范围失败: {str(e)}")
             return None, None, 0
     
-    def _update_historical_progress(self, config_id, all_filtered_videos, added_count):
-        """更新历史搬运进度"""
+    def _update_historical_progress(self, config_id, all_filtered_videos, consumed_count):
+        """更新历史搬运进度
+
+        Args:
+            config_id: 监控配置 ID
+            all_filtered_videos: 应用偏移量前的完整筛选结果（用于"完成"判定）
+            consumed_count: 本轮实际消费的候选数（含去重跳过/未入队者），
+                           用于推进 offset，与 added_count 解耦。避免 offset 漂移/重扫。
+        """
         try:
             # 获取当前配置
             config = self.get_monitor_config(config_id)
             if not config:
                 return
-            
+
             current_offset = config.get('historical_offset', 0)
-            
-            # 更新偏移量
-            new_offset = current_offset + added_count
-            
+
+            # 更新偏移量：只按本轮消费的候选数推进
+            new_offset = current_offset + int(consumed_count or 0)
+
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
@@ -1842,13 +1861,14 @@ class YouTubeMonitor:
                     (new_offset, config_id)
                 )
                 conn.commit()
-            
-            logger.info(f"历史搬运偏移量更新为: {new_offset} (本次添加 {added_count} 个视频)")
-            
+
+            logger.info(f"历史搬运偏移量更新为: {new_offset} (本轮消费 {consumed_count} 个候选)")
+
             # 检查是否已经处理完所有视频
-            if new_offset >= len(all_filtered_videos):
+            total_candidates = len(all_filtered_videos or [])
+            if total_candidates and new_offset >= total_candidates:
                 logger.info(f"历史搬运已完成！总共处理了 {new_offset} 个视频")
-                
+
         except Exception as e:
             logger.error(f"更新历史搬运进度失败: {str(e)}")
     

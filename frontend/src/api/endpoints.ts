@@ -89,7 +89,12 @@ export const tasksApi = {
 
 /* ---------- 设置 ---------- */
 export const settingsApi = {
-  get: () => api<{ config: Record<string, unknown>; partitions: Record<string, unknown> }>(`${V1}/settings`),
+  get: () =>
+    api<{
+      config: Record<string, unknown>
+      acfun_partition_mapping: Record<string, unknown>
+      bilibili_partition_mapping: Record<string, unknown>
+    }>(`${V1}/settings`),
   save: (formData: FormData) =>
     api<ApiResponse & { operation_id?: string }>(`${V1}/settings`, {
       method: 'POST',
@@ -97,7 +102,6 @@ export const settingsApi = {
     }),
   saveProgress: (operationId: string) =>
     api<Record<string, unknown>>(`${V1}/settings/save-progress/${operationId}`),
-  reset: () => api<ApiResponse>(`${V1}/settings/reset`, { method: 'POST' }),
   resetGroup: (keys: string[]) =>
     api<ApiResponse>(`${V1}/settings/reset`, { method: 'POST', body: { keys } }),
   tgbotToken: (action: 'generate' | 'revoke') =>
@@ -111,10 +115,12 @@ export const settingsApi = {
     api<ApiResponse>(`${V1}/settings/cookiecloud/test`, { method: 'POST' }),
   syncCookiecloud: () =>
     api<ApiResponse>(`${V1}/settings/cookiecloud/sync`, { method: 'POST' }),
-  acfunQrStart: () => api<ApiResponse & { session_id?: string; qr_image?: string }>(`${V1}/settings/acfun/qrcode/start`, { method: 'POST' }),
+  acfunQrStart: () =>
+    api<ApiResponse & { session_id?: string; image_base64?: string; mime_type?: string }>(`${V1}/settings/acfun/qrcode/start`, { method: 'POST' }),
   acfunQrStatus: (sessionId: string) =>
     api<ApiResponse>(`${V1}/settings/acfun/qrcode/status/${sessionId}`),
-  bilibiliQrStart: () => api<ApiResponse & { session_id?: string; qr_image?: string }>(`${V1}/settings/bilibili/qrcode/start`, { method: 'POST' }),
+  bilibiliQrStart: () =>
+    api<ApiResponse & { session_id?: string; image_base64?: string; mime_type?: string }>(`${V1}/settings/bilibili/qrcode/start`, { method: 'POST' }),
   bilibiliQrStatus: (sessionId: string) =>
     api<ApiResponse>(`${V1}/settings/bilibili/qrcode/status/${sessionId}`),
   clearLogs: (payload: { hours?: number; all?: boolean }) =>

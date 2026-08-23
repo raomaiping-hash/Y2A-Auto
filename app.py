@@ -724,46 +724,26 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
         confirm_password = form_data.get('confirm_password')
         if new_password:
             if new_password == confirm_password:
-                form_data['password'] = new_password
+                # 管理密码统一 pbkdf2 哈希存储（update_config 会对 password 再次确认，
+                # 哈希串因带 'pbkdf2_sha256:' 前缀而幂等，不会重复哈希）。
+                from modules.security_utils import hash_password
+                form_data['password'] = hash_password(new_password)
             else:
                 _append_settings_message(messages, 'danger', '新密码两次输入不一致，密码未更新。')
 
         form_data.pop('new_password', None)
         form_data.pop('confirm_password', None)
 
-        checkboxes = [
-            'AUTO_MODE_ENABLED', 'TRANSLATE_TITLE', 'TRANSLATE_DESCRIPTION',
-            'UPLOAD_APPEND_REPOST_NOTICE', 'DELETE_DOWNLOAD_FILES_AFTER_UPLOAD',
-            'GENERATE_TAGS', 'YOUTUBE_UPLOADER_AS_FIRST_TAG', 'RECOMMEND_PARTITION',
-            'RECOMMEND_PARTITION_WITH_COVER', 'CONTENT_MODERATION_ENABLED',
-            'OPENAI_THINKING_ENABLED', 'SUBTITLE_OPENAI_THINKING_ENABLED', 'SUBTITLE_QC_THINKING_ENABLED',
-            'LOG_CLEANUP_ENABLED', 'SUBTITLE_TRANSLATION_ENABLED', 'SUBTITLE_EMBED_IN_VIDEO',
-            'SUBTITLE_KEEP_ORIGINAL',
-            'YOUTUBE_PROXY_ENABLED', 'YOUTUBE_API_PROXY_ENABLED', 'password_protection_enabled',
-            'SPEECH_RECOGNITION_ENABLED',
-            'VAD_ENABLED',
-            'SUBTITLE_NORMALIZE_PUNCTUATION', 'SUBTITLE_FILTER_FILLER_WORDS',
-            'SUBTITLE_TIME_OFFSET_ENABLED', 'SUBTITLE_MIN_CUE_DURATION_ENABLED',
-            'SUBTITLE_MERGE_GAP_ENABLED', 'SUBTITLE_MIN_TEXT_LENGTH_ENABLED',
-            'SUBTITLE_MAX_LINE_LENGTH_ENABLED', 'SUBTITLE_MAX_LINES_ENABLED',
-            'SUBTITLE_QC_ENABLED',
-            'FFMPEG_AUTO_DOWNLOAD', 'WHISPER_TRANSLATE',
-            'VIDEO_CUSTOM_PARAMS_ENABLED',
-            'VOXTRAL_DIARIZE',
-            'NOTIFY_ENABLED',
-            'NOTIFY_EVENT_TASK_ADDED',
-            'NOTIFY_EVENT_TASK_COMPLETED',
-            'NOTIFY_EVENT_TASK_FAILED',
-            'NOTIFY_EVENT_LOGIN_SUCCESS',
-            'NOTIFY_EVENT_LOGIN_LOCKED',
-            'NOTIFY_EVENT_QR_LOGIN_SUCCESS',
-            'NOTIFY_EVENT_QR_LOGIN_FAILED',
-            'NOTIFY_WECOM_ENABLED',
-            'NOTIFY_SERVERCHAN_ENABLED',
-            'NOTIFY_MESSAGE_PUSHER_ENABLED',
-            'COOKIECLOUD_ENABLED',
-            'COOKIECLOUD_ALLOW_PLAINTEXT_EXPORT',
-        ]
+        # 配置字段类型单一来源：从 DEFAULT_CONFIG 推导勾选框/整数/浮点字段，
+        # 避免多套硬编码字段表 + fallback 值互相矛盾（之前多次踩坑）。
+        from modules.config_manager import (
+            _infer_config_field_types,
+            get_config_default,
+            DEFAULT_CONFIG as _DEFAULT_CONFIG,
+        )
+        _derived_checkboxes, _derived_int_fields, _derived_float_fields = _infer_config_field_types(_DEFAULT_CONFIG)
+
+        checkboxes = list(_derived_checkboxes)
         for checkbox in SPEECH_PIPELINE_CHECKBOXES:
             if checkbox not in checkboxes:
                 checkboxes.append(checkbox)
@@ -771,19 +751,7 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
             if checkbox not in form_data:
                 form_data[checkbox] = 'off'
 
-        numeric_fields = [
-            'MAX_CONCURRENT_TASKS', 'MAX_CONCURRENT_UPLOADS', 'LOG_CLEANUP_HOURS',
-            'LOG_CLEANUP_INTERVAL', 'SUBTITLE_BATCH_SIZE', 'SUBTITLE_MAX_RETRIES',
-            'SUBTITLE_RETRY_DELAY', 'SUBTITLE_MAX_WORKERS', 'YOUTUBE_DOWNLOAD_THREADS',
-            'YOUTUBE_DOWNLOAD_MAX_HEIGHT',
-            'LOGIN_MAX_FAILED_ATTEMPTS', 'LOGIN_LOCKOUT_MINUTES', 'LOGIN_SESSION_TIMEOUT_MINUTES',
-            'VAD_SILERO_MIN_SPEECH_MS',
-            'VAD_SILERO_MIN_SILENCE_MS', 'VAD_SILERO_MAX_SPEECH_S',
-            'VAD_SILERO_SPEECH_PAD_MS', 'VAD_MAX_SEGMENT_S',
-            'SUBTITLE_QC_SAMPLE_MAX_ITEMS', 'SUBTITLE_QC_MAX_CHARS',
-            'SUBTITLE_MIN_TEXT_LENGTH',
-            'WHISPER_MAX_WORKERS', 'WHISPER_MAX_RETRIES'
-        ]
+        numeric_fields = list(_derived_int_fields)
         for field in SPEECH_PIPELINE_INT_FIELDS:
             if field not in numeric_fields:
                 numeric_fields.append(field)
@@ -797,39 +765,12 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
                     form_data[field] = str(normalized_value)
                 except (ValueError, TypeError) as e:
                     logger.debug(f"整数转换失败 - field: {field}, value: {form_data[field]}, error: {e}")
-                    defaults = {
-                        'MAX_CONCURRENT_TASKS': 2,
-                        'MAX_CONCURRENT_UPLOADS': 1,
-                        'LOG_CLEANUP_HOURS': 168,
-                        'LOG_CLEANUP_INTERVAL': 12,
-                        'SUBTITLE_BATCH_SIZE': 5,
-                        'SUBTITLE_MAX_RETRIES': 3,
-                        'SUBTITLE_RETRY_DELAY': 5,
-                        'SUBTITLE_MAX_WORKERS': 2,
-                        'YOUTUBE_DOWNLOAD_THREADS': 4,
-                        'YOUTUBE_DOWNLOAD_MAX_HEIGHT': 1080,
-                        'LOGIN_MAX_FAILED_ATTEMPTS': 5,
-                        'LOGIN_LOCKOUT_MINUTES': 15,
-                        'LOGIN_SESSION_TIMEOUT_MINUTES': 30,
-                        'VAD_SILERO_MIN_SPEECH_MS': 300,
-                        'VAD_SILERO_MIN_SILENCE_MS': 320,
-                        'VAD_SILERO_MAX_SPEECH_S': 120,
-                        'VAD_SILERO_SPEECH_PAD_MS': 120,
-                        'VAD_MAX_SEGMENT_S': 15,
-                        'SUBTITLE_QC_SAMPLE_MAX_ITEMS': 80,
-                        'SUBTITLE_QC_MAX_CHARS': 9000
-                    }
-                    defaults.update(SPEECH_PIPELINE_INT_FIELDS)
-                    form_data[field] = str(defaults.get(field, 1))
-                    logger.debug(f"整数字段使用默认值 - field: {field}, value: {form_data[field]}")
+                    # 回退默认值一律取自 DEFAULT_CONFIG（单一来源），而非硬编码表。
+                    default_val = get_config_default(field, _DEFAULT_CONFIG)
+                    form_data[field] = str(default_val if default_val is not None else 0)
+                    logger.debug(f"整数字段使用 DEFAULT_CONFIG 默认值 - field: {field}, value: {form_data[field]}")
 
-        float_fields = [
-            'VAD_SILERO_THRESHOLD',
-            'SUBTITLE_TIME_OFFSET_S', 'SUBTITLE_MIN_CUE_DURATION_S', 'SUBTITLE_MERGE_GAP_S',
-            'SUBTITLE_QC_THRESHOLD',
-            'WHISPER_RETRY_DELAY_S', 'AUDIO_CHUNK_WINDOW_S', 'AUDIO_CHUNK_OVERLAP_S',
-            'VAD_MERGE_GAP_S', 'VAD_MIN_SEGMENT_S', 'VAD_MAX_SEGMENT_S_FOR_SPLIT'
-        ]
+        float_fields = list(_derived_float_fields)
         for field in SPEECH_PIPELINE_FLOAT_FIELDS:
             if field not in float_fields:
                 float_fields.append(field)
@@ -842,22 +783,10 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
                     form_data[field] = str(float(original_value))
                 except (ValueError, TypeError) as e:
                     logger.debug(f"浮点数转换失败 - field: {field}, value: {form_data[field]}, error: {e}")
-                    float_defaults = {
-                        'VAD_SILERO_THRESHOLD': 0.55,
-                        'SUBTITLE_TIME_OFFSET_S': 0.0,
-                        'SUBTITLE_MIN_CUE_DURATION_S': 0.6,
-                        'SUBTITLE_MERGE_GAP_S': 0.3,
-                        'SUBTITLE_QC_THRESHOLD': 0.35,
-                        'WHISPER_RETRY_DELAY_S': 2.0,
-                        'AUDIO_CHUNK_WINDOW_S': 15.0,
-                        'AUDIO_CHUNK_OVERLAP_S': 0.4,
-                        'VAD_MERGE_GAP_S': 0.35,
-                        'VAD_MIN_SEGMENT_S': 0.8,
-                        'VAD_MAX_SEGMENT_S_FOR_SPLIT': 15.0,
-                    }
-                    float_defaults.update(SPEECH_PIPELINE_FLOAT_FIELDS)
-                    form_data[field] = str(float_defaults.get(field, 0.0))
-                    logger.debug(f"浮点字段使用默认值 - field: {field}, value: {form_data[field]}")
+                    # 回退默认值一律取自 DEFAULT_CONFIG（单一来源），而非硬编码表。
+                    default_val = get_config_default(field, _DEFAULT_CONFIG)
+                    form_data[field] = str(default_val if default_val is not None else 0.0)
+                    logger.debug(f"浮点字段使用 DEFAULT_CONFIG 默认值 - field: {field}, value: {form_data[field]}")
 
         if 'SUBTITLE_FONT_NAME' in form_data:
             form_data['SUBTITLE_FONT_NAME'] = str(form_data['SUBTITLE_FONT_NAME']).strip()

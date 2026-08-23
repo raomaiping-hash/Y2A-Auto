@@ -40,7 +40,27 @@ def _parse_bool_cfg(value: Any, default: bool = True) -> bool:
     return s in ('1', 'true', 'yes', 'on', 'y')
 
 
-def _wrap_text_by_pixels(text: str, font_size: int, video_width: int, margin_lr: int = 60) -> str:
+def wrap_text_by_pixels(text: str, font_size: int, video_width: int, margin_lr: int = 60, max_lines: int = 3) -> str:
+    """双语/单语字幕统一的按像素宽度折行入口（规范实现）。
+
+    以可用像素宽度与字号估算每行字符预算，把过长字幕安全折行，
+    避免溢出画面。此函数是双语与单语烧录路径共同复用的折行规范，
+    保证同一段长字幕无论走哪条烧录路径都不会溢出。
+
+    Args:
+        text: 原始字幕文本
+        font_size: 显示字号（px）
+        video_width: 视频画面宽度（px）
+        margin_lr: 左右安全边距（px）
+        max_lines: 最多显示行数，超出截断加省略号
+
+    Returns:
+        折行后的文本，多行用 ``\\N`` 连接（ASS 换行符）。
+    """
+    return _wrap_text_by_pixels(text, font_size, video_width, margin_lr, max_lines)
+
+
+def _wrap_text_by_pixels(text: str, font_size: int, video_width: int, margin_lr: int = 60, max_lines: int = 3) -> str:
     """把过长的字幕文本按可用宽度折行，避免溢出画面。
 
     估算每行可容纳字符数（CJK 全宽≈font_size，其余≈font_size*0.5），
@@ -53,7 +73,7 @@ def _wrap_text_by_pixels(text: str, font_size: int, video_width: int, margin_lr:
     available = max(font_size, (video_width - 2 * margin_lr) * 0.90)  # 留 10% 余量防止贴边溢出
     # 每行最大字符数（宽字符按全宽 1，窄字符按 0.55）
     budget = max(2, int(available / font_size))
-    max_lines = 3
+    max_lines = max(1, int(max_lines or 3))
 
     # 分词：拉丁/数字按空格，CJK 逐字符
     tokens: List[str] = []
@@ -313,11 +333,16 @@ def build_bilingual_srt(
     out_path: str,
     order: str = 'trans_src',
     source_is_zh: bool = False,
+    video_width: Optional[int] = None,
+    zh_size: int = 60,
+    en_size: int = 32,
 ) -> Optional[str]:
     """生成中英双语字幕 srt。
 
     order: 'trans_src'=中文在上/英文在下；'src_trans'=英文在上/中文在下。
     source_is_zh: 源语言本就是中文时，直接把源字幕复制，不拼双语。
+    video_width/zh_size/en_size: 可选，提供后对每行按画面宽度折行（与烧录共用
+        ``wrap_text_by_pixels`` 规范实现），避免上传的字幕文件与烧录画面不一致/溢出。
     返回输出路径；无有效内容返回 None。
     """
     order = str(order or 'trans_src').strip().lower()
@@ -361,6 +386,11 @@ def build_bilingual_srt(
         sc = _find_source_for(src_cues, t0, t1)
         en = _slice_source_text(sc['text'], sc['start'], sc['end'], t0, t1) if sc else ''
         zh = tc['text']
+        # 若提供视频宽度，则对每条字幕按画面宽度折行，与烧录共用 wrap_text_by_pixels 规范实现。
+        if video_width:
+            zh = _wrap_text_by_pixels(zh, zh_size, video_width, 60, max_lines=3)
+            if en:
+                en = _wrap_text_by_pixels(en, en_size, video_width, 60, max_lines=3)
         if order == 'src_trans':
             body = '\n'.join(x for x in (en, zh) if x)
         else:

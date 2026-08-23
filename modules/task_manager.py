@@ -7,6 +7,7 @@ import time
 import json
 import uuid
 import sqlite3
+import contextlib
 import html
 import logging
 import shutil
@@ -821,70 +822,67 @@ def recover_interrupted_tasks_to_pending():
     """将进程意外退出后卡在“处理中状态”的任务恢复为 pending，以便重启后自动续跑。"""
     processing_states = PROCESSING_STATES
 
-    conn = get_db_connection()
     try:
-        placeholders = ','.join(['?'] * len(processing_states))
-        cursor = conn.execute(
-            f'SELECT id, status, upload_target, acfun_upload_response, bilibili_upload_response FROM tasks WHERE status IN ({placeholders})',
-            tuple(processing_states)
-        )
-        rows = cursor.fetchall() or []
-        if not rows:
-            return 0
-
-        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        recovered = 0
-
-        for row in rows:
-            task_id = row['id']
-            status = row['status']
-            upload_target = normalize_upload_target(row['upload_target'])
-            has_acfun_resp = bool(row['acfun_upload_response'])
-            has_bilibili_resp = bool(row['bilibili_upload_response'])
-            if upload_target == UPLOAD_TARGET_BOTH:
-                has_upload_resp = has_acfun_resp and has_bilibili_resp
-                has_partial_upload_resp = has_acfun_resp != has_bilibili_resp
-            elif upload_target == UPLOAD_TARGET_BILIBILI:
-                has_upload_resp = has_bilibili_resp
-                has_partial_upload_resp = False
-            else:
-                has_upload_resp = has_acfun_resp
-                has_partial_upload_resp = False
-
-            # 若上传响应已存在，直接标记为 completed（避免重复上传）
-            if has_upload_resp:
-                conn.execute(
-                    'UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?',
-                    (TASK_STATES['COMPLETED'], now_str, task_id)
-                )
-                recovered += 1
-                continue
-
-            # 双平台仅部分成功：恢复为 failed，让 process_task 走“失败点续传”只补失败平台
-            if has_partial_upload_resp:
-                conn.execute(
-                    'UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?',
-                    (TASK_STATES['FAILED'], now_str, task_id)
-                )
-                recovered += 1
-                continue
-
-            # 其他处理中状态：恢复为 pending，由流水线根据checkpoint跳过已完成阶段
-            conn.execute(
-                'UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?',
-                (TASK_STATES['PENDING'], now_str, task_id)
+        with db_connect() as conn:
+            placeholders = ','.join(['?'] * len(processing_states))
+            cursor = conn.execute(
+                f'SELECT id, status, upload_target, acfun_upload_response, bilibili_upload_response FROM tasks WHERE status IN ({placeholders})',
+                tuple(processing_states)
             )
-            recovered += 1
+            rows = cursor.fetchall() or []
+            if not rows:
+                return 0
 
-        conn.commit()
+            now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            recovered = 0
+
+            for row in rows:
+                task_id = row['id']
+                status = row['status']
+                upload_target = normalize_upload_target(row['upload_target'])
+                has_acfun_resp = bool(row['acfun_upload_response'])
+                has_bilibili_resp = bool(row['bilibili_upload_response'])
+                if upload_target == UPLOAD_TARGET_BOTH:
+                    has_upload_resp = has_acfun_resp and has_bilibili_resp
+                    has_partial_upload_resp = has_acfun_resp != has_bilibili_resp
+                elif upload_target == UPLOAD_TARGET_BILIBILI:
+                    has_upload_resp = has_bilibili_resp
+                    has_partial_upload_resp = False
+                else:
+                    has_upload_resp = has_acfun_resp
+                    has_partial_upload_resp = False
+
+                # 若上传响应已存在，直接标记为 completed（避免重复上传）
+                if has_upload_resp:
+                    conn.execute(
+                        'UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?',
+                        (TASK_STATES['COMPLETED'], now_str, task_id)
+                    )
+                    recovered += 1
+                    continue
+
+                # 双平台仅部分成功：恢复为 failed，让 process_task 走“失败点续传”只补失败平台
+                if has_partial_upload_resp:
+                    conn.execute(
+                        'UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?',
+                        (TASK_STATES['FAILED'], now_str, task_id)
+                    )
+                    recovered += 1
+                    continue
+
+                # 其他处理中状态：恢复为 pending，由流水线根据checkpoint跳过已完成阶段
+                conn.execute(
+                    'UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?',
+                    (TASK_STATES['PENDING'], now_str, task_id)
+                )
+                recovered += 1
+
         if recovered:
             logger.info(f"断点续跑：已恢复 {recovered} 个处理中任务为 pending")
         return recovered
     except Exception as e:
         logger.warning(f"断点续跑：恢复处理中任务失败（忽略）：{e}")
         return 0
-    finally:
-        conn.close()
 
 # WebSocket实时通知功能已移除，改为使用传统页面刷新方式
 
@@ -1324,7 +1322,11 @@ def get_db_path():
     return DB_PATH
 
 def get_db_connection():
-    """获取数据库连接"""
+    """获取数据库连接（用于需要手动管理生命的场景）。
+
+    说明：优先使用 ``db_connect()`` 上下文管理器，自动确保连接关闭；
+    本函数仅保留给既有手动 ``conn.close()`` 调用点向后兼容。
+    """
     conn = sqlite3.connect(DB_PATH, timeout=DB_CONNECT_TIMEOUT_SECONDS)
     conn.row_factory = sqlite3.Row  # 返回字典形式的结果
     try:
@@ -1334,6 +1336,27 @@ def get_db_connection():
     except Exception as e:
         logger.debug(f"设置SQLite连接参数失败，将使用默认参数: {e}")
     return conn
+
+
+@contextlib.contextmanager
+def db_connect():
+    """数据库连接上下文管理器：自动提交（成功）或回滚（异常）并关闭连接，避免连接泄漏。"""
+    conn = sqlite3.connect(DB_PATH, timeout=DB_CONNECT_TIMEOUT_SECONDS)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute(f'PRAGMA busy_timeout = {DB_BUSY_TIMEOUT_MS}')
+        conn.execute('PRAGMA journal_mode = WAL')
+        conn.execute('PRAGMA synchronous = NORMAL')
+    except Exception as e:
+        logger.debug(f"设置SQLite连接参数失败，将使用默认参数: {e}")
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 def add_task(youtube_url, upload_target=None):
     """
@@ -1348,23 +1371,21 @@ def add_task(youtube_url, upload_target=None):
     """
     task_id = str(uuid.uuid4())
     normalized_target = normalize_upload_target(upload_target)
-    conn = get_db_connection()
-    
     try:
-        if not upload_target:
-            try:
-                from modules.config_manager import load_config
-                cfg = load_config()
-                normalized_target = normalize_upload_target(cfg.get('UPLOAD_TARGET_DEFAULT', UPLOAD_TARGET_ACFUN))
-            except Exception:
-                normalized_target = UPLOAD_TARGET_ACFUN
-        conn.execute(
-            'INSERT INTO tasks (id, youtube_url, upload_target, status) VALUES (?, ?, ?, ?)',
-            (task_id, youtube_url, normalized_target, TASK_STATES['PENDING'])
-        )
-        conn.commit()
-        logger.info(f"新任务添加成功, ID: {task_id}, URL: {youtube_url}, 平台: {normalized_target}")
-        
+        with db_connect() as conn:
+            if not upload_target:
+                try:
+                    from modules.config_manager import load_config
+                    cfg = load_config()
+                    normalized_target = normalize_upload_target(cfg.get('UPLOAD_TARGET_DEFAULT', UPLOAD_TARGET_ACFUN))
+                except Exception:
+                    normalized_target = UPLOAD_TARGET_ACFUN
+            conn.execute(
+                'INSERT INTO tasks (id, youtube_url, upload_target, status) VALUES (?, ?, ?, ?)',
+                (task_id, youtube_url, normalized_target, TASK_STATES['PENDING'])
+            )
+            logger.info(f"新任务添加成功, ID: {task_id}, URL: {youtube_url}, 平台: {normalized_target}")
+
         # 新任务添加后，触发全局任务处理器检查是否需要启动任务
         try:
             from modules.config_manager import load_config
@@ -1374,21 +1395,19 @@ def add_task(youtube_url, upload_target=None):
                 # 延迟触发，确保数据库事务已提交
                 import threading
                 import time
-                
+
                 def delayed_trigger():
                     time.sleep(0.5)  # 等待0.5秒确保事务提交
                     processor._check_and_start_next_pending_task()
-                
+
                 threading.Thread(target=delayed_trigger, daemon=True).start()
                 logger.info(f"已触发检查pending任务: {task_id}")
         except Exception as e:
             logger.warning(f"触发任务检查失败，但任务已成功添加: {str(e)}")
-            
+
     except Exception as e:
         logger.error(f"添加任务失败: {str(e)}")
         task_id = None
-    finally:
-        conn.close()
     if task_id:
         publish_task_event('task_added', {'task_id': task_id})
         emit_notification_event(
@@ -1575,18 +1594,16 @@ def get_task(task_id):
         task: 任务信息字典，如果不存在则返回None
     """
     logger.debug(f"正在获取任务 {task_id}")
-    conn = get_db_connection()
     try:
-        cursor = conn.execute('SELECT * FROM tasks WHERE id = ?', (task_id,))
-        task = cursor.fetchone()
-        result = dict(task) if task else None
+        with db_connect() as conn:
+            cursor = conn.execute('SELECT * FROM tasks WHERE id = ?', (task_id,))
+            task = cursor.fetchone()
+            result = dict(task) if task else None
         logger.debug(f"获取任务 {task_id} 结果: {result}")
         return result
     except Exception as e:
         logger.error(f"获取任务 {task_id} 失败: {str(e)}")
         return None
-    finally:
-        conn.close()
 
 def get_all_tasks():
     """
@@ -1595,15 +1612,13 @@ def get_all_tasks():
     Returns:
         tasks: 任务信息列表
     """
-    conn = get_db_connection()
     try:
-        cursor = conn.execute('SELECT * FROM tasks ORDER BY created_at DESC')
-        return [dict(row) for row in cursor.fetchall()]
+        with db_connect() as conn:
+            cursor = conn.execute('SELECT * FROM tasks ORDER BY created_at DESC')
+            return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
         logger.error(f"获取所有任务失败: {str(e)}")
         return []
-    finally:
-        conn.close()
 
 def get_tasks_paginated(page=1, per_page=20, status=None, search=None):
     """
@@ -1618,39 +1633,39 @@ def get_tasks_paginated(page=1, per_page=20, status=None, search=None):
     Returns:
         dict: 包含tasks、total、page、per_page、total_pages等信息的字典
     """
-    conn = get_db_connection()
     try:
-        where_clauses = []
-        params = []
+        with db_connect() as conn:
+            where_clauses = []
+            params = []
 
-        if status:
-            where_clauses.append('status = ?')
-            params.append(status)
+            if status:
+                where_clauses.append('status = ?')
+                params.append(status)
 
-        if search and str(search).strip():
-            like = f'%{str(search).strip()}%'
-            where_clauses.append(
-                '(video_title_original LIKE ? OR video_title_translated LIKE ? OR youtube_url LIKE ?)'
+            if search and str(search).strip():
+                like = f'%{str(search).strip()}%'
+                where_clauses.append(
+                    '(video_title_original LIKE ? OR video_title_translated LIKE ? OR youtube_url LIKE ?)'
+                )
+                params.extend([like, like, like])
+
+            where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ''
+
+            # 获取总数
+            cursor = conn.execute(f'SELECT COUNT(*) FROM tasks{where_sql}', params)
+            total = cursor.fetchone()[0]
+
+            # 计算分页参数
+            total_pages = (total + per_page - 1) // per_page  # 向上取整
+            offset = (page - 1) * per_page
+
+            # 获取分页数据
+            cursor = conn.execute(
+                f'SELECT * FROM tasks{where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?',
+                params + [per_page, offset]
             )
-            params.extend([like, like, like])
+            tasks = [dict(row) for row in cursor.fetchall()]
 
-        where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ''
-
-        # 获取总数
-        cursor = conn.execute(f'SELECT COUNT(*) FROM tasks{where_sql}', params)
-        total = cursor.fetchone()[0]
-
-        # 计算分页参数
-        total_pages = (total + per_page - 1) // per_page  # 向上取整
-        offset = (page - 1) * per_page
-
-        # 获取分页数据
-        cursor = conn.execute(
-            f'SELECT * FROM tasks{where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?',
-            params + [per_page, offset]
-        )
-        tasks = [dict(row) for row in cursor.fetchall()]
-        
         return {
             'tasks': tasks,
             'total': total,
@@ -1675,8 +1690,6 @@ def get_tasks_paginated(page=1, per_page=20, status=None, search=None):
             'prev_page': None,
             'next_page': None
         }
-    finally:
-        conn.close()
 
 def get_tasks_by_status(status):
     """
@@ -1688,15 +1701,13 @@ def get_tasks_by_status(status):
     Returns:
         tasks: 任务信息列表
     """
-    conn = get_db_connection()
     try:
-        cursor = conn.execute('SELECT * FROM tasks WHERE status = ? ORDER BY created_at DESC', (status,))
-        return [dict(row) for row in cursor.fetchall()]
+        with db_connect() as conn:
+            cursor = conn.execute('SELECT * FROM tasks WHERE status = ? ORDER BY created_at DESC', (status,))
+            return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
         logger.error(f"获取{status}状态任务失败: {str(e)}")
         return []
-    finally:
-        conn.close()
 
 def delete_task(task_id, delete_files=True):
     """
@@ -1723,18 +1734,15 @@ def delete_task(task_id, delete_files=True):
         _delete_task_files_on_idle(task_id)
     
     # 删除任务记录
-    conn = get_db_connection()
     try:
-        conn.execute('DELETE FROM tasks WHERE id = ?', (task_id,))
-        conn.commit()
+        with db_connect() as conn:
+            conn.execute('DELETE FROM tasks WHERE id = ?', (task_id,))
         logger.info(f"任务 {task_id} 删除成功")
         publish_task_event('task_deleted', {'task_id': task_id})
         return True
     except Exception as e:
         logger.error(f"删除任务 {task_id} 失败: {str(e)}")
         return False
-    finally:
-        conn.close()
 
 def clear_all_tasks(delete_files=True):
     """
@@ -1766,18 +1774,15 @@ def clear_all_tasks(delete_files=True):
                 ).start()
     
     # 清空任务表
-    conn = get_db_connection()
     try:
-        conn.execute('DELETE FROM tasks')
-        conn.commit()
+        with db_connect() as conn:
+            conn.execute('DELETE FROM tasks')
         logger.info("所有任务已清空")
         publish_task_event('tasks_cleared', {})
         return True
     except Exception as e:
         logger.error(f"清空任务失败: {str(e)}")
         return False
-    finally:
-        conn.close()
 
 
 def _get_task_download_dir_real(task_id):
@@ -2125,59 +2130,56 @@ def reset_stuck_tasks(skip_active=False, cancel_active=False):
     # 定义超时时间（30分钟）
     timeout_seconds = 30 * 60
     
-    conn = get_db_connection()
     try:
-        # 查找可能卡住的任务（状态为处理中但长时间未更新）
-        cursor = conn.execute('''
-            SELECT id, status, updated_at 
-            FROM tasks 
-            WHERE status IN ({}) 
-            AND datetime(updated_at) < datetime('now', '-30 minutes')
-        '''.format(','.join(['?'] * len(PROCESSING_STATES))), PROCESSING_STATES)
-        
-        stuck_tasks = cursor.fetchall()
-        
-        if stuck_tasks:
-            logger.warning(f"发现 {len(stuck_tasks)} 个可能卡住的任务，正在重置...")
-            reset_count = 0
-            
-            for task in stuck_tasks:
-                task_id = task[0]
-                old_status = task[1]
-                updated_at = task[2]
+        with db_connect() as conn:
+            # 查找可能卡住的任务（状态为处理中但长时间未更新）
+            cursor = conn.execute('''
+                SELECT id, status, updated_at 
+                FROM tasks 
+                WHERE status IN ({}) 
+                AND datetime(updated_at) < datetime('now', '-30 minutes')
+            '''.format(','.join(['?'] * len(PROCESSING_STATES))), PROCESSING_STATES)
 
-                if skip_active and _is_task_active(task_id):
-                    if cancel_active:
-                        request_task_cancel(task_id)
-                    logger.warning(
-                        f"任务 {task_id[:8]}... 仍处于活动线程中，已跳过自动重置"
-                    )
-                    continue
-                
-                # 重置为失败状态
-                conn.execute('''
-                    UPDATE tasks 
-                    SET status = ?, error_message = ?, updated_at = ?
-                    WHERE id = ?
-                ''', (TASK_STATES['FAILED'], 
-                      f"任务超时重置 (原状态: {old_status})",
-                      datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                      task_id))
-                reset_count += 1
-                
-                logger.info(f"重置任务 {task_id[:8]}... 从 {old_status} 到 failed")
-            
-            conn.commit()
-            return reset_count
-        else:
-            logger.debug("没有发现卡住的任务")
-            return 0
-            
+            stuck_tasks = cursor.fetchall()
+
+            if stuck_tasks:
+                logger.warning(f"发现 {len(stuck_tasks)} 个可能卡住的任务，正在重置...")
+                reset_count = 0
+
+                for task in stuck_tasks:
+                    task_id = task[0]
+                    old_status = task[1]
+                    updated_at = task[2]
+
+                    if skip_active and _is_task_active(task_id):
+                        if cancel_active:
+                            request_task_cancel(task_id)
+                        logger.warning(
+                            f"任务 {task_id[:8]}... 仍处于活动线程中，已跳过自动重置"
+                        )
+                        continue
+
+                    # 重置为失败状态
+                    conn.execute('''
+                        UPDATE tasks 
+                        SET status = ?, error_message = ?, updated_at = ?
+                        WHERE id = ?
+                    ''', (TASK_STATES['FAILED'], 
+                          f"任务超时重置 (原状态: {old_status})",
+                          datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                          task_id))
+                    reset_count += 1
+
+                    logger.info(f"重置任务 {task_id[:8]}... 从 {old_status} 到 failed")
+
+                return reset_count
+            else:
+                logger.debug("没有发现卡住的任务")
+                return 0
+
     except Exception as e:
         logger.error(f"重置卡住任务时出错: {str(e)}")
         return 0
-    finally:
-        conn.close()
 
 def validate_cookies(cookies_path, service_name="Unknown"):
     """验证cookies文件的有效性"""
@@ -3565,6 +3567,9 @@ class TaskProcessor:
                                 subtitle_file, translated_subtitle_path, srt_path,
                                 order=order,
                                 source_is_zh=(str(subtitle_lang).lower() == 'zh'),
+                                video_width=vw,
+                                zh_size=int(self.config.get('SUBTITLE_ZH_SIZE') or 60),
+                                en_size=int(self.config.get('SUBTITLE_EN_SIZE') or 32),
                             ) or translated_subtitle_path
                         except Exception as exc:
                             task_logger.warning("生成双语 SRT 失败，用翻译字幕: %s", str(exc)[:160])

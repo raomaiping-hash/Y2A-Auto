@@ -56,9 +56,9 @@ from .task_manager import (
     TASK_STATES,
     add_task,
     clear_all_tasks,
+    db_connect,
     delete_task,
     force_upload_task,
-    get_db_connection,
     get_global_task_processor,
     get_metadata_translation_retry_block_reason,
     get_task,
@@ -218,7 +218,14 @@ def auth_login():
     if not stored_password:
         return _error('系统尚未设置密码，无法登录。请在禁用密码保护的情况下，进入设置页面设置密码。')
 
-    if password and password == stored_password:
+    # 管理密码自 V2 起采用 pbkdf2 哈希存储。对旧明文做一次性向后兼容：
+    # 若仍是无 'pbkdf2_sha256:' 前缀的明文，允许比对通过并提示重新保存以升级为哈希。
+    from .security_utils import verify_password
+    is_hash_format = str(stored_password).startswith('pbkdf2_sha256:')
+    if password and (
+        verify_password(password, stored_password)
+        or (not is_hash_format and password == stored_password)
+    ):
         session['logged_in'] = True
         session.permanent = True
         sec.update({'failed_attempts': 0, 'locked_until': 0, 'last_attempt': now_ts})
@@ -226,6 +233,8 @@ def auth_login():
         _app()._emit_login_event(EVENT_LOGIN_SUCCESS, {
             'ip_address': _app()._get_request_ip_address(),
         })
+        if not is_hash_format:
+            logger.warning("检测到旧明文管理密码登录成功，建议在设置页重新保存密码以升级为 pbkdf2 哈希存储")
         return jsonify({'success': True, 'message': '登录成功', 'csrf_token': _issue_csrf_token()})
 
     max_attempts = int(config.get('LOGIN_MAX_FAILED_ATTEMPTS', 5) or 5)
@@ -279,96 +288,95 @@ def dashboard():
     }
     recent_tasks = []
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
+        with db_connect() as conn:
+            cur = conn.cursor()
 
-        now_local = datetime.now()
-        today_start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
-        tomorrow_start = today_start + timedelta(days=1)
-        fmt = '%Y-%m-%d %H:%M:%S'
-        start_str = today_start.strftime(fmt)
-        end_str = tomorrow_start.strftime(fmt)
+            now_local = datetime.now()
+            today_start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+            tomorrow_start = today_start + timedelta(days=1)
+            fmt = '%Y-%m-%d %H:%M:%S'
+            start_str = today_start.strftime(fmt)
+            end_str = tomorrow_start.strftime(fmt)
 
-        cur.execute('SELECT COUNT(*) FROM tasks')
-        stats['total_tasks'] = cur.fetchone()[0] or 0
-        cur.execute('SELECT COUNT(*) FROM tasks WHERE status = ?', (TASK_STATES['AWAITING_REVIEW'],))
-        stats['awaiting_review'] = cur.fetchone()[0] or 0
-        cur.execute('SELECT COUNT(*) FROM tasks WHERE status = ?', (TASK_STATES['FAILED'],))
-        stats['failed_total'] = cur.fetchone()[0] or 0
-        cur.execute('SELECT COUNT(*) FROM tasks WHERE status = ?', (TASK_STATES['PENDING'],))
-        stats['pending_total'] = cur.fetchone()[0] or 0
-        cur.execute('SELECT COUNT(*) FROM tasks WHERE status = ?', (TASK_STATES['READY_FOR_UPLOAD'],))
-        stats['ready_total'] = cur.fetchone()[0] or 0
+            cur.execute('SELECT COUNT(*) FROM tasks')
+            stats['total_tasks'] = cur.fetchone()[0] or 0
+            cur.execute('SELECT COUNT(*) FROM tasks WHERE status = ?', (TASK_STATES['AWAITING_REVIEW'],))
+            stats['awaiting_review'] = cur.fetchone()[0] or 0
+            cur.execute('SELECT COUNT(*) FROM tasks WHERE status = ?', (TASK_STATES['FAILED'],))
+            stats['failed_total'] = cur.fetchone()[0] or 0
+            cur.execute('SELECT COUNT(*) FROM tasks WHERE status = ?', (TASK_STATES['PENDING'],))
+            stats['pending_total'] = cur.fetchone()[0] or 0
+            cur.execute('SELECT COUNT(*) FROM tasks WHERE status = ?', (TASK_STATES['READY_FOR_UPLOAD'],))
+            stats['ready_total'] = cur.fetchone()[0] or 0
 
-        processing_states = (
-            'fetching_info', 'info_fetched',
-            TASK_STATES['TRANSLATING'], TASK_STATES['TAGGING'], TASK_STATES['PARTITIONING'],
-            TASK_STATES['MODERATING'], TASK_STATES['DOWNLOADING'], TASK_STATES['DOWNLOADED'],
-            TASK_STATES['ASR_TRANSCRIBING'], TASK_STATES['TRANSLATING_SUBTITLE'],
-            TASK_STATES['ENCODING_VIDEO'], TASK_STATES['UPLOADING'],
-        )
-        placeholders = ','.join(['?'] * len(processing_states))
-        cur.execute(
-            f'SELECT COUNT(*) FROM tasks WHERE status IN ({placeholders})',
-            processing_states,
-        )
-        stats['in_progress'] = cur.fetchone()[0] or 0
+            processing_states = (
+                'fetching_info', 'info_fetched',
+                TASK_STATES['TRANSLATING'], TASK_STATES['TAGGING'], TASK_STATES['PARTITIONING'],
+                TASK_STATES['MODERATING'], TASK_STATES['DOWNLOADING'], TASK_STATES['DOWNLOADED'],
+                TASK_STATES['ASR_TRANSCRIBING'], TASK_STATES['TRANSLATING_SUBTITLE'],
+                TASK_STATES['ENCODING_VIDEO'], TASK_STATES['UPLOADING'],
+            )
+            placeholders = ','.join(['?'] * len(processing_states))
+            cur.execute(
+                f'SELECT COUNT(*) FROM tasks WHERE status IN ({placeholders})',
+                processing_states,
+            )
+            stats['in_progress'] = cur.fetchone()[0] or 0
 
-        cur.execute(
-            'SELECT COUNT(*) FROM tasks WHERE status = ? AND updated_at >= ? AND updated_at < ?',
-            (TASK_STATES['COMPLETED'], start_str, end_str),
-        )
-        stats['completed_today'] = cur.fetchone()[0] or 0
-        cur.execute(
-            'SELECT COUNT(*) FROM tasks WHERE status = ? AND updated_at >= ? AND updated_at < ?',
-            (TASK_STATES['FAILED'], start_str, end_str),
-        )
-        stats['failed_today'] = cur.fetchone()[0] or 0
-        cur.execute(
-            'SELECT COUNT(*) FROM tasks WHERE created_at >= ? AND created_at < ?',
-            (start_str, end_str),
-        )
-        stats['created_today'] = cur.fetchone()[0] or 0
+            cur.execute(
+                'SELECT COUNT(*) FROM tasks WHERE status = ? AND updated_at >= ? AND updated_at < ?',
+                (TASK_STATES['COMPLETED'], start_str, end_str),
+            )
+            stats['completed_today'] = cur.fetchone()[0] or 0
+            cur.execute(
+                'SELECT COUNT(*) FROM tasks WHERE status = ? AND updated_at >= ? AND updated_at < ?',
+                (TASK_STATES['FAILED'], start_str, end_str),
+            )
+            stats['failed_today'] = cur.fetchone()[0] or 0
+            cur.execute(
+                'SELECT COUNT(*) FROM tasks WHERE created_at >= ? AND created_at < ?',
+                (start_str, end_str),
+            )
+            stats['created_today'] = cur.fetchone()[0] or 0
 
-        cur.execute(
-            'SELECT id, video_title_translated, video_title_original, status, updated_at, '
-            'upload_target, acfun_upload_response, bilibili_upload_response '
-            'FROM tasks ORDER BY updated_at DESC LIMIT 10'
-        )
-        for r in cur.fetchall():
-            upload_id = None
-            upload_target = (r[5] or 'acfun').lower()
-            try:
-                if upload_target == 'both':
-                    resp_b = json.loads(r[7]) if r[7] else None
-                    resp_a = json.loads(r[6]) if r[6] else None
-                    bv = resp_b.get('bvid') if isinstance(resp_b, dict) else None
-                    ac = resp_a.get('ac_number') if isinstance(resp_a, dict) else None
-                    if bv and ac:
-                        upload_id = f'{bv} / AC{ac}'
-                    elif bv:
-                        upload_id = bv
-                    elif ac:
-                        upload_id = f'AC{ac}'
-                elif upload_target == 'bilibili':
-                    resp = json.loads(r[7]) if r[7] else None
-                    if isinstance(resp, dict):
-                        upload_id = resp.get('bvid') or resp.get('aid')
-                else:
-                    resp = json.loads(r[6]) if r[6] else None
-                    if isinstance(resp, dict):
-                        upload_id = resp.get('ac_number')
-            except Exception:
+            cur.execute(
+                'SELECT id, video_title_translated, video_title_original, status, updated_at, '
+                'upload_target, acfun_upload_response, bilibili_upload_response '
+                'FROM tasks ORDER BY updated_at DESC LIMIT 10'
+            )
+            for r in cur.fetchall():
                 upload_id = None
-            recent_tasks.append({
-                'id': r[0],
-                'title': r[1] or r[2] or '未获取标题',
-                'status': r[3],
-                'updated_at': r[4],
-                'upload_target': upload_target,
-                'upload_id': upload_id,
-            })
-        conn.close()
+                upload_target = (r[5] or 'acfun').lower()
+                try:
+                    if upload_target == 'both':
+                        resp_b = json.loads(r[7]) if r[7] else None
+                        resp_a = json.loads(r[6]) if r[6] else None
+                        bv = resp_b.get('bvid') if isinstance(resp_b, dict) else None
+                        ac = resp_a.get('ac_number') if isinstance(resp_a, dict) else None
+                        if bv and ac:
+                            upload_id = f'{bv} / AC{ac}'
+                        elif bv:
+                            upload_id = bv
+                        elif ac:
+                            upload_id = f'AC{ac}'
+                    elif upload_target == 'bilibili':
+                        resp = json.loads(r[7]) if r[7] else None
+                        if isinstance(resp, dict):
+                            upload_id = resp.get('bvid') or resp.get('aid')
+                    else:
+                        resp = json.loads(r[6]) if r[6] else None
+                        if isinstance(resp, dict):
+                            upload_id = resp.get('ac_number')
+                except Exception:
+                    upload_id = None
+                recent_tasks.append({
+                    'id': r[0],
+                    'title': r[1] or r[2] or '未获取标题',
+                    'status': r[3],
+                    'updated_at': r[4],
+                    'upload_target': upload_target,
+                    'upload_id': upload_id,
+                })
     except Exception as e:
         logger.warning('仪表盘统计失败: %s', e)
 

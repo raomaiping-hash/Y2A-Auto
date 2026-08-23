@@ -312,7 +312,17 @@ def load_config():
 
                 config, migrated_legacy_speech = migrate_legacy_speech_pipeline_config(config)
                 config, removed_keys = _prune_unknown_config_keys(config)
-                
+
+                # 一次性迁移：若管理密码仍是明文（非哈希格式），自动哈希并落盘。
+                # 幂等：哈希格式化后再次加载不会再触发。
+                password_migrated = False
+                stored_password = str(config.get('password') or '').strip()
+                if stored_password and not stored_password.startswith('pbkdf2_sha256:'):
+                    from .security_utils import hash_password
+                    logger.info("检测到旧版明文管理密码，已自动升级为 pbkdf2 哈希存储")
+                    config['password'] = hash_password(stored_password)
+                    password_migrated = True
+
                 # 确保所有默认配置项都存在
                 missing_keys = False
                 for key, value in DEFAULT_CONFIG.items():
@@ -396,6 +406,7 @@ def load_config():
                     or migrated_legacy_speech
                     or removed_unknown_keys
                     or prompt_mode_changed
+                    or password_migrated
                 ):
                     if migrated_legacy_speech:
                         logger.info("检测到旧版 ASR/VAD 默认值，已自动迁移到质量优先默认配置")
@@ -410,6 +421,43 @@ def load_config():
     logger.info("使用默认配置并创建配置文件")
     save_config(DEFAULT_CONFIG, config_path)
     return DEFAULT_CONFIG
+
+def _infer_config_field_types(default_config=None):
+    """
+    从 DEFAULT_CONFIG 推导哪些键是布尔/整数/浮点字段（单一来源）。
+
+    返回:
+        (checkbox_keys, int_keys, float_keys): 三个可排序列表。
+        判定依据是 DEFAULT_CONFIG 中对应值的类型：
+          - bool  -> checkbox（勾选框）
+          - int（且非 bool）-> integer 字段
+          - float -> float 字段
+    目的：让设置保存逻辑不再硬编码三张字段表 + 各自 fallback 值，
+    统一在"类型 + 默认值"上与 DEFAULT_CONFIG 保持一致，消灭多套默认值互相矛盾的问题。
+    """
+    cfg = default_config if isinstance(default_config, dict) else DEFAULT_CONFIG
+    checkbox_keys = []
+    int_keys = []
+    float_keys = []
+    for key, value in cfg.items():
+        if isinstance(value, bool):
+            checkbox_keys.append(key)
+        elif isinstance(value, int):
+            int_keys.append(key)
+        elif isinstance(value, float):
+            float_keys.append(key)
+    return (
+        sorted(checkbox_keys),
+        sorted(int_keys),
+        sorted(float_keys),
+    )
+
+
+def get_config_default(key, default_config=None):
+    """返回 DEFAULT_CONFIG 中某键的默认值；不存在则返回 None（由调用方兜底）。"""
+    cfg = default_config if isinstance(default_config, dict) else DEFAULT_CONFIG
+    return cfg.get(key)
+
 
 def save_config(config, config_path=None):
     """
@@ -459,8 +507,20 @@ def update_config(new_config):
             if isinstance(DEFAULT_CONFIG[key], bool):
                 current_config[key] = str(new_config[key]).lower() in ['true', '1', 'on']
             elif key in ('password', 'COOKIECLOUD_PASSWORD'):
-                if str(new_config[key]).strip(): # Only update password if a new one is provided
-                    current_config[key] = new_config[key]
+                # Only update password if a new one is provided
+                if str(new_config[key]).strip():
+                    if key == 'password':
+                        # 管理密码统一走 pbkdf2 哈希，避免明文落盘。
+                        # 若已传入的是哈希格式（重存/其他来源），则保持不变。
+                        from .security_utils import needs_rehash
+                        candidate = str(new_config[key])
+                        if needs_rehash(candidate):
+                            from .security_utils import hash_password
+                            current_config[key] = hash_password(candidate)
+                        else:
+                            current_config[key] = candidate
+                    else:
+                        current_config[key] = new_config[key]
             elif key == 'VIDEO_ENCODER':
                 # 支持硬件编码：auto/cpu/nvidia/intel/amd/vaapi
                 encoder_value = str(new_config[key]).lower().strip()

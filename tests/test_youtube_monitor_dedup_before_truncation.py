@@ -182,7 +182,7 @@ class DedupBeforeTruncationTests(unittest.TestCase):
             saved_ids.append(video["id"])
             return real_save(video, cid, auto_add_to_tasks=auto_add_to_tasks)
 
-        with patch.object(YouTubeMonitor, "_fetch_trending_videos", return_value=candidates), \
+        with patch.object(YouTubeMonitor, "_fetch_videos", return_value=candidates), \
                 patch.object(YouTubeMonitor, "_meets_criteria", return_value=True), \
                 patch.object(YouTubeMonitor, "_detect_video_type", return_value="video"), \
                 patch.object(YouTubeMonitor, "_save_video_history", side_effect=spy):
