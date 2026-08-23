@@ -664,6 +664,16 @@ def build_dubbed_audio(
         base_speed = float(config.get('TTS_DUB_SPEED') or 1.0)
         max_workers = int(config.get('TTS_DUB_MAX_WORKERS') or 3)
 
+        # 计算每句"可利用时长"tol_dur = 窗口 + 句间空隙(利用相邻静默扩容，参考 VideoLingo tolerance)
+        _tol = float(config.get('TTS_DUB_TOLERANCE') or 0.6)
+        tol_durs: Dict[int, float] = {}
+        for _i, _c in enumerate(usable_cues, 1):
+            _s = float(_c['start']); _e = float(_c['end'])
+            _w = max(_e - _s, _MIN_CUE_DURATION_S)
+            _nxt = float(usable_cues[_i]['start']) if _i < len(usable_cues) else _e
+            _gap = max(0.0, _nxt - _e)
+            tol_durs[_i] = _w + min(_gap, _tol)
+
         def _synth_cue(idx: int, cue: Dict[str, Any]):
             start_s = float(cue['start'])
             window_s = max(float(cue['end']) - start_s, _MIN_CUE_DURATION_S)
@@ -681,7 +691,7 @@ def build_dubbed_audio(
             with open(raw_path, 'wb') as fh:
                 fh.write(raw)
             tts_duration = probe_duration(raw_path, ffprobe, logger)
-            fit_speed = fit_cue_speed(tts_duration, window_s)
+            fit_speed = fit_cue_speed(tts_duration, tol_durs.get(idx, window_s))
             if fit_speed > 1.0:
                 fitted_path = os.path.join(tmp_dir, f'cue_{idx:04d}_fitted.wav')
                 fit_audio_speed(raw_path, fit_speed, fitted_path, ffmpeg, logger)

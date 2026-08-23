@@ -1583,40 +1583,52 @@ class SubtitleTranslator:
             return False
 
     def _trim_overlong_cues(self, cues: List[Dict[str, Any]], speed_cap: float = 1.35) -> List[Dict[str, Any]]:
-        """对超出"可接受变速"范围的句子做 LLM 文本修剪，使其能在窗口内自然读完。
-
-        借鉴 VideoLingo check_len_then_trim：当估算读音时长 > 窗口×speed_cap 时，
-        用 LLM 精简该句文本（而非把音频压到 2.25x）。修剪后文本用于字幕+配音，保持一致。
+        """字幕-时长对齐（参考 VideoLingo merge_rows + check_len_then_trim）：
+        1. 先合并物理超窗的密集短句到相邻句，放大窗口到可读；
+        2. 合并后仍超窗的用 LLM 修剪文本缩短；
+        确保每句以自然语速可读（变速只做轻微适配），避免配音超快/对不上。
         """
         if not cues:
             return cues
-        out: List[Dict[str, Any]] = []
-        for cue in cues:
-            text = str(cue.get('text') or '').strip()
-            if not text:
-                out.append(cue)
-                continue
+
+        def _win(c):
             try:
-                window = (
-                    SubtitleWriter._ts_to_seconds(cue['end'])
-                    - SubtitleWriter._ts_to_seconds(cue['start'])
-                )
+                return SubtitleWriter._ts_to_seconds(c['end']) - SubtitleWriter._ts_to_seconds(c['start'])
             except Exception:
-                out.append(cue)
-                continue
-            if window <= 0:
-                out.append(cue)
-                continue
+                return 0.0
+
+        out: List[Dict[str, Any]] = []
+        i, n = 0, len(cues)
+        while i < n:
+            cur = dict(cues[i])
+            text = str(cur.get('text') or '').strip()
             est = self._estimate_duration(text)
-            if est > window * speed_cap:
-                trimmed = self._llm_trim_text(text, window)
+            win = _win(cur)
+            if win <= 0:
+                out.append(cur)
+                i += 1
+                continue
+            if est <= win * speed_cap:
+                out.append(cur)
+                i += 1
+                continue
+            # 物理超窗：与后续句合并放大窗口
+            merged = dict(cur)
+            j = i + 1
+            while j < n and est > _win(merged) * speed_cap:
+                nxt = cues[j]
+                merged['text'] = (merged.get('text') or '') + (nxt.get('text') or '')
+                merged['end'] = nxt['end']
+                est = self._estimate_duration((merged.get('text') or '').strip())
+                j += 1
+            if est > _win(merged) * speed_cap:
+                # 合并后仍超窗：LLM 修剪缩短文本
+                trimmed = self._llm_trim_text((merged.get('text') or '').strip(), _win(merged))
                 if trimmed:
-                    cue['text'] = trimmed
-                    self.logger.info(
-                        "字幕-时长对齐: 修剪 %.1fs 窗口内超窗句 %d字->%d字",
-                        window, len(text), len(trimmed),
-                    )
-            out.append(cue)
+                    merged['text'] = trimmed
+                    self.logger.info("字幕-时长对齐: 合并+修剪 %.1fs 窗口句 %d字->%d字", _win(merged), len(text), len(trimmed))
+            out.append(merged)
+            i = j
         return out
 
     @staticmethod
