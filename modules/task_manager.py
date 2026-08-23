@@ -6320,8 +6320,13 @@ class TaskProcessor:
             if path.endswith('.cleaned.srt'):
                 return path
             cleaned_path = path[:-4] + '.cleaned.srt'
+            # 若源字幕比 cleaned 新（字幕被重新生成/切分对齐），则重新生成 cleaned，避免用旧缓存
             if os.path.isfile(cleaned_path):
-                return cleaned_path
+                try:
+                    if os.path.getmtime(path) <= os.path.getmtime(cleaned_path):
+                        return cleaned_path
+                except OSError:
+                    return cleaned_path
             try:
                 with open(path, 'r', encoding='utf-8', errors='replace') as fh:
                     text = engine.clean_srt_text(fh.read())
