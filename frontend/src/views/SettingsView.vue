@@ -3,7 +3,6 @@ import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { settingsApi } from '@/api/endpoints'
 import { useToastStore } from '@/stores/toast'
 import { ApiError } from '@/api/client'
-import type { TtsVoice } from '@/api/types'
 import UiToggle from '@/components/ui/UiToggle.vue'
 import UiModal from '@/components/ui/UiModal.vue'
 import UiProgress from '@/components/ui/UiProgress.vue'
@@ -165,20 +164,8 @@ const SECTIONS: SectionDef[] = [
       { key: 'WHISPER_TRANSLATE', label: '转写时翻译为英文', type: 'toggle' },
       { key: 'WHISPER_MAX_RETRIES', label: '转写重试次数', type: 'number' },
       { key: 'WHISPER_RETRY_DELAY_S', label: '重试延迟（秒）', type: 'number', step: '0.5' },
-      { key: 'TTS_DUB_ENABLED', label: '启用配音（替换原声）', type: 'toggle', hint: '用翻译后字幕合成为语音替换原声，背景音保持不变' },
-      { key: 'TTS_DUB_API_KEY', label: 'Fish Audio API Key', type: 'password', sensitive: true },
-      { key: 'TTS_DUB_BASE_URL', label: 'Fish Audio 地址', type: 'text', hint: '默认 https://api.fish.audio' },
-      { key: 'TTS_DUB_MODEL', label: 'TTS 模型', type: 'text', placeholder: 's2.1-pro-free' },
-      { key: 'TTS_DUB_REFERENCE_MODE', label: '声音来源', type: 'select', options: [{ value: 'auto', label: '自动克隆原说话人' }, { value: 'voice_id', label: '固定声音 ID' }, { value: 'none', label: '默认音色' }] },
-      { key: 'TTS_DUB_VOICE_ID', label: '声音 ID（reference_id）', type: 'text', hint: '预建克隆模型 ID；声音来源选固定时生效' },
-      { key: 'TTS_DUB_SPEED', label: '语速', type: 'number', step: '0.1', hint: '0.5–2.0，超窗自动加速适配' },
-      { key: 'TTS_DUB_BACKGROUND_MODE', label: '背景处理', type: 'select', options: [{ value: 'separate', label: '分离伴奏（推荐，保持背景音）' }, { value: 'duck', label: '压低原声（更快，保留部分原声）' }] },
-      { key: 'TTS_DUB_DUCK_LEVEL', label: '原声压低强度', type: 'number', step: '0.01', hint: 'duck 模式下语音窗原声倍数，0.03≈-30dB 几乎静音、配音突出' },
-      { key: 'TTS_DUB_CUE_GAIN', label: '配音音量增益', type: 'number', step: '0.1', hint: '合成配音音量倍率，2.0≈+6dB 使配音更突出清晰' },
-      { key: 'TTS_DUB_MAX_DURATION_MINUTES', label: '分离上限（分钟）', type: 'number', hint: '超过自动转压低模式（保护 CPU）' },
-      { key: 'TTS_DUB_MAX_RETRIES', label: '合成重试次数', type: 'number' },
-      { key: 'TTS_DUB_RETRY_DELAY', label: '重试延迟（秒）', type: 'number' },
-      { key: 'TTS_DUB_MAX_WORKERS', label: '合成并发数', type: 'number', hint: '逐句 TTS 并发合成，3-5 合理；过高易触发限流' },
+      { key: 'SUBTITLE_OUTPUT_LANGS', label: '双语字幕顺序', type: 'select', options: [{ value: 'trans_src', label: '中文在上·英文在下' }, { value: 'src_trans', label: '英文在上·中文在下' }], hint: '中英双语字幕（参考 VideoLingo 双字幕）' },
+      { key: 'SUBTITLE_MAX_LENGTH', label: '单条字幕最大字数', type: 'number', step: '1', hint: '超过则切分成多条，Netflix 单行标准' },
       { key: 'VOXTRAL_API_KEY', label: 'Voxtral API Key', type: 'password', sensitive: true },
       { key: 'VOXTRAL_BASE_URL', label: 'Voxtral 地址', type: 'text' },
       { key: 'VOXTRAL_MODEL_NAME', label: 'Voxtral 模型', type: 'text' },
@@ -565,72 +552,6 @@ async function testNotify(channel: string) {
   }
 }
 
-/* ---- TTS 合成测试 ---- */
-const ttsTestBusy = ref(false)
-async function testTts() {
-  ttsTestBusy.value = true
-  try {
-    const res = await settingsApi.ttsTest('这是一段语音合成测试。')
-    if (res.success) toast.success(res.message)
-    else toast.error('合成失败', res.message)
-  } catch (e) {
-    toast.error('合成失败', e instanceof ApiError ? e.message : '请稍后重试')
-  } finally {
-    ttsTestBusy.value = false
-  }
-}
-
-/* ---- 公开说话人（Voice Library） ---- */
-const voicesQuery = ref('')
-const voiceList = ref<TtsVoice[]>([])
-const voicesLoading = ref(false)
-const voicePreviewBusyId = ref('')
-let voiceAudio: HTMLAudioElement | null = null
-
-async function loadVoices() {
-  voicesLoading.value = true
-  try {
-    const res = await settingsApi.ttsVoices({ q: voicesQuery.value || undefined, page_size: 30 })
-    voiceList.value = res.items ?? []
-  } catch (e) {
-    toast.error('加载说话人失败', e instanceof ApiError ? e.message : '请稍后重试')
-  } finally {
-    voicesLoading.value = false
-  }
-}
-
-async function previewVoice(v: TtsVoice) {
-  voicePreviewBusyId.value = v.id
-  try {
-    const res = await settingsApi.ttsPreview(v.id)
-    if (!res.audio_base64) {
-      toast.error('试听失败', '无音频数据')
-      return
-    }
-    const bin = atob(res.audio_base64)
-    const bytes = new Uint8Array(bin.length)
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
-    const url = URL.createObjectURL(new Blob([bytes], { type: res.mime || 'audio/mpeg' }))
-    if (voiceAudio) {
-      voiceAudio.pause()
-      URL.revokeObjectURL(voiceAudio.dataset.url || '')
-    }
-    voiceAudio = new Audio(url)
-    voiceAudio.dataset.url = url
-    await voiceAudio.play()
-  } catch (e) {
-    toast.error('试听失败', e instanceof ApiError ? e.message : '请稍后重试')
-  } finally {
-    voicePreviewBusyId.value = ''
-  }
-}
-
-function useVoice(v: TtsVoice) {
-  form.TTS_DUB_VOICE_ID = v.id
-  form.TTS_DUB_REFERENCE_MODE = 'voice_id'
-  toast.success(`已选用说话人「${v.title}」`)
-}
-
 /* ---- TG Bot Token ---- */
 const tgBusy = ref(false)
 async function tgAction(action: 'generate' | 'revoke') {
@@ -952,53 +873,6 @@ function onSettingsScroll() {
                 </div>
               </div>
 
-              <!-- 语音识别附加：TTS 合成测试 -->
-              <div v-if="section.id === 'speech'" class="field field-full">
-                <span class="field-label">测试语音合成（Fish Audio）</span>
-                <div class="flex gap-2 flex-wrap">
-                  <button class="btn btn-secondary btn-sm" :disabled="ttsTestBusy" @click="testTts">
-                    <span v-if="ttsTestBusy" class="spinner spinner-sm"></span>
-                    <i v-else class="bi bi-soundwave"></i> 合成测试
-                  </button>
-                </div>
-              </div>
-
-              <!-- 语音识别附加：公开说话人列表 -->
-              <div v-if="section.id === 'speech'" class="field field-full">
-                <span class="field-label">公开说话人（Voice Library）</span>
-                <div class="flex gap-2 flex-wrap mb-2">
-                  <input
-                    v-model="voicesQuery"
-                    class="input voice-search"
-                    placeholder="按标题搜索…"
-                    @keyup.enter="loadVoices"
-                  />
-                  <button class="btn btn-secondary btn-sm" :disabled="voicesLoading" @click="loadVoices">
-                    <span v-if="voicesLoading" class="spinner spinner-sm"></span>
-                    <i v-else class="bi bi-arrow-clockwise"></i> 刷新列表
-                  </button>
-                </div>
-                <div v-if="voiceList.length" class="voice-list">
-                  <div v-for="v in voiceList" :key="v.id" class="voice-row">
-                    <div class="grow" style="min-width: 0">
-                      <div class="voice-title clamp-1">
-                        {{ v.title }}
-                        <span v-if="v.languages?.length" class="voice-meta"> · {{ (v.languages || []).slice(0, 4).join(', ') }}</span>
-                      </div>
-                      <div class="fs-xs text-muted clamp-1 voice-meta">{{ (v.tags || []).slice(0, 4).join(' / ') || v.id.slice(0, 12) }}</div>
-                    </div>
-                    <button class="btn btn-ghost btn-sm" :disabled="voicePreviewBusyId === v.id" @click="previewVoice(v)">
-                      <span v-if="voicePreviewBusyId === v.id" class="spinner spinner-sm"></span>
-                      <i v-else class="bi bi-play-circle"></i> 试听
-                    </button>
-                    <button class="btn btn-secondary btn-sm" :disabled="form.TTS_DUB_VOICE_ID === v.id" @click="useVoice(v)">
-                      <i class="bi bi-check2"></i> {{ form.TTS_DUB_VOICE_ID === v.id ? '已选用' : '使用' }}
-                    </button>
-                  </div>
-                </div>
-                <div v-else class="text-muted fs-xs">{{ voicesLoading ? '加载中…' : '点击「刷新列表」拉取公开说话人' }}</div>
-              </div>
-
               <!-- 通知推送附加：测试按钮 -->
               <div v-if="section.id === 'notify'" class="field field-full">
                 <span class="field-label">发送测试消息</span>
@@ -1156,38 +1030,6 @@ function onSettingsScroll() {
 </template>
 
 <style scoped>
-.voice-search {
-  max-width: 220px;
-}
-.voice-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  max-height: 320px;
-  overflow-y: auto;
-  padding: 4px;
-  background: var(--bg-raised);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-}
-.voice-row {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  padding: 6px 8px;
-  border-radius: var(--radius-sm);
-  transition: background var(--dur-fast) var(--ease);
-}
-.voice-row:hover {
-  background: var(--bg-hover);
-}
-.voice-title {
-  font-size: var(--fs-sm);
-  color: var(--text-primary);
-}
-.voice-meta {
-  font-size: var(--fs-xs);
-}
 .page-header {
   display: flex;
   align-items: flex-end;

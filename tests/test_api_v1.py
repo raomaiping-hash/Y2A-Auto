@@ -130,91 +130,9 @@ class ApiV1HealthTests(unittest.TestCase):
         self.assertEqual(tools['ffmpeg']['path'], '/opt/ffmpeg')
         self.assertEqual(tools['ffprobe']['status'], 'ok')
         self.assertIn('asr', tools)
-        self.assertIn('tts', tools)
         self.assertIn('vad', tools)
         self.assertIn('disk', tools)
 
-
-class ApiV1TtsTestEndpointTests(unittest.TestCase):
-    def setUp(self):
-        web_app.app.config['TESTING'] = True
-        self.client = web_app.app.test_client()
-
-    @patch.object(av, 'load_config', return_value={'password_protection_enabled': False, 'TTS_DUB_API_KEY': ''})
-    def test_tts_test_without_key_returns_400(self, *mocks):
-        token = _csrf(self.client)
-        resp = self.client.post(
-            '/api/v1/settings/tts/test',
-            json={'text': '测试'},
-            headers={'X-CSRF-Token': token},
-        )
-        self.assertEqual(resp.status_code, 400)
-        self.assertIn('TTS_DUB_API_KEY', resp.get_json()['message'])
-
-    @patch.object(av, 'load_config', return_value={'password_protection_enabled': False, 'TTS_DUB_API_KEY': 'k'})
-    def test_voices_endpoint_normalizes_and_skips_missing_id(self, *mocks):
-        fake = Mock()
-        fake.status_code = 200
-        fake.json.return_value = {
-            'total': 2,
-            'has_more': True,
-            'items': [
-                {'_id': 'abc123', 'title': 'Voice A', 'languages': ['zh'], 'tags': ['female'], 'state': 'trained'},
-                {'title': 'No ID skip me'},
-            ],
-        }
-        token = _csrf(self.client)
-        with patch.object(av.httpx, 'get', return_value=fake) as get_mock:
-            resp = self.client.get('/api/v1/settings/tts/voices?page_size=10', headers={'X-CSRF-Token': token})
-        data = resp.get_json()
-        self.assertEqual(resp.status_code, 200)
-        self.assertEqual(len(data['items']), 1)
-        self.assertEqual(data['items'][0]['id'], 'abc123')
-        self.assertEqual(data['items'][0]['title'], 'Voice A')
-        self.assertTrue(data['has_more'])
-        # 代理请求带鉴权头与分页参数
-        headers = get_mock.call_args.kwargs['headers']
-        self.assertEqual(headers['Authorization'], 'Bearer k')
-        self.assertEqual(get_mock.call_args.kwargs['params']['page_size'], 10)
-
-    def test_voices_without_key_returns_400(self):
-        with patch.object(av, 'load_config', return_value={'password_protection_enabled': False, 'TTS_DUB_API_KEY': ''}):
-            token = _csrf(self.client)
-            resp = self.client.get('/api/v1/settings/tts/voices', headers={'X-CSRF-Token': token})
-        self.assertEqual(resp.status_code, 400)
-
-
-class ApiV1DubEndpointTests(unittest.TestCase):
-    def setUp(self):
-        web_app.app.config['TESTING'] = True
-        self.client = web_app.app.test_client()
-
-    @patch.object(av, 'load_config', return_value={'password_protection_enabled': False, 'TTS_DUB_API_KEY': ''})
-    @patch.object(av, 'get_task', return_value={'id': 't1', 'status': 'ready_for_upload', 'video_path_local': '/tmp/x.mp4'})
-    @patch.object(av.os.path, 'isfile', return_value=True)
-    @patch.object(av.os, 'listdir', return_value=['video.zh.srt'])
-    @patch.object(av.os.path, 'dirname', return_value='/tmp')
-    def test_dub_without_key_returns_400(self, *mocks):
-        token = _csrf(self.client)
-        resp = self.client.post('/api/v1/tasks/t1/dub', headers={'X-CSRF-Token': token})
-        self.assertEqual(resp.status_code, 400)
-        self.assertIn('TTS_DUB_API_KEY', resp.get_json()['message'])
-
-    @patch.object(av, 'load_config', return_value={'password_protection_enabled': False, 'TTS_DUB_API_KEY': 'k'})
-    @patch.object(av, 'get_task', return_value={'id': 't1', 'status': 'ready_for_upload', 'video_path_local': ''})
-    def test_dub_without_video_returns_400(self, *mocks):
-        token = _csrf(self.client)
-        resp = self.client.post('/api/v1/tasks/t1/dub', headers={'X-CSRF-Token': token})
-        self.assertEqual(resp.status_code, 400)
-
-    @patch.object(av, 'load_config', return_value={'password_protection_enabled': False, 'TTS_DUB_API_KEY': 'k'})
-    @patch.object(av, 'get_task', return_value={'id': 't1', 'status': 'dubbing_audio', 'video_path_local': '/tmp/x.mp4'})
-    @patch.object(av.os.path, 'isfile', return_value=True)
-    def test_dub_is_repeatable_even_while_dubbing_status_set(self, *mocks):
-        """配音动作可重复触发（幂等），不再对 dubbing_audio 状态返回 409"""
-        token = _csrf(self.client)
-        resp = self.client.post('/api/v1/tasks/t1/dub', headers={'X-CSRF-Token': token})
-        self.assertIn(resp.status_code, (200, 400))
 
 
 if __name__ == '__main__':

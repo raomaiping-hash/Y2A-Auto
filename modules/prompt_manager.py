@@ -535,8 +535,8 @@ def get_glossary_prompt(target_language: str = "zh") -> str:
 def get_subtitle_trim_prompt(text: str, duration_s: float) -> str:
     """构建"超窗字幕修剪"的 system prompt：把过长字幕缩短到可在时长内自然读完。
 
-    用于配音/字幕的"时长-文本对齐"：当某句译文在窗口内读不完时，
-    用 LLM 精简（删填充词、冗余修饰、可省代词），保留原意，避免靠变速硬压。
+    用于字幕的"时长-文本对齐"：当某句译文在窗口内读不完时，
+    用 LLM 精简（删填充词、冗余修饰、可省代词），保留原意，避免字幕超长。
     """
     max_chars = max(1, int(float(duration_s) * 4.0))
     return (

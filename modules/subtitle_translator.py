@@ -1573,7 +1573,7 @@ class SubtitleTranslator:
             return SubtitleWriter._strip_terminal_full_stop(text.strip())
     
     def _write_translated_file(self, items: List[SubtitleItem], output_path: str) -> bool:
-        """写入翻译后的文件（写入前做字幕-时长对齐：超窗句 LLM 修剪，避免配音超快/对不上）。"""
+        """写入翻译后的文件（写入前做字幕-时长对齐：超窗句 LLM 修剪，避免字幕超长）。"""
         try:
             output_ext = Path(output_path).suffix.lower()
             max_chars = int(getattr(self.config, 'cue_max_chars', 22) or 22)
@@ -1656,7 +1656,7 @@ class SubtitleTranslator:
     def _enforce_min_subtitle_duration(cues: List[Dict[str, Any]], min_dur: float = 2.5, speed_cap: float = 1.2) -> List[Dict[str, Any]]:
         """套用 VideoLingo process_srt 的 min_subtitle_duration 逻辑：
         时长 < min_dur 的字幕，若与下一句紧邻则合并文本+窗口，否则把 end 延长到 start+min_dur。
-        从根源消除"极短窗口读不完"（配音前对齐关键一步）。
+        从根源消除"极短窗口读不完"的字幕。
         """
         if not cues:
             return cues

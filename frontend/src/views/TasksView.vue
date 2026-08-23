@@ -94,14 +94,6 @@ function rowActions(task: Task): DropdownItem[] {
   if (task.preview_available) {
     items.push({ id: 'preview', label: '预览视频', icon: 'bi-film' })
   }
-  const isDubbed = (task as { preview_kind?: string }).preview_kind === 'dubbed'
-  if (
-    task.preview_available &&
-    !isDubbed &&
-    ['awaiting_manual_review', 'ready_for_upload', 'completed', 'failed'].includes(status)
-  ) {
-    items.push({ id: 'dub', label: '生成配音', icon: 'bi-mic-fill', disabled: isDubbed })
-  }
   if (['awaiting_manual_review', 'ready_for_upload', 'completed', 'failed'].includes(status)) {
     items.push({ id: 'force_upload', label: '强制上传', icon: 'bi-cloud-arrow-up-fill' })
   }
@@ -157,12 +149,6 @@ function onSelect(task: Task, item: DropdownItem) {
       break
     case 'preview':
       router.push(`/tasks/${task.id}`)
-      break
-    case 'dub':
-      askConfirm('生成配音', `将用任务「${taskTitle(task)}」现有字幕文件合成配音并替换原声（约几分钟，后台执行）。确定继续吗？`, () => tasksApi.dub(task.id).then((r) => {
-        toast.success(r.message || '配音生成已启动')
-        store.fetchPage().catch(() => undefined)
-      }))
       break
     case 'force_upload':
       tasksApi.forceUpload(task.id).then((r) => {

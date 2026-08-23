@@ -164,26 +164,9 @@ DEFAULT_CONFIG = {
     # 语音识别（无字幕转写）
     "SPEECH_RECOGNITION_ENABLED": False,  # 启用语音识别生成字幕
     "SPEECH_RECOGNITION_PROVIDER": "whisper",  # whisper（OpenAI兼容）
-    # TTS 配音（fish.audio：翻译字幕 → 语音替换原声，保留背景音）
-    "TTS_DUB_ENABLED": False,  # 是否启用配音
-    "TTS_DUB_API_KEY": "",
-    "TTS_DUB_BASE_URL": "https://api.fish.audio",
-    "TTS_DUB_MODEL": "s2.1-pro-free",  # s2.1-pro-free 免费档 / s2.1-pro 生产档
-    "TTS_DUB_REFERENCE_MODE": "auto",  # auto=零样本克隆原声 / voice_id=固定声音 / none=默认音色
-    "TTS_DUB_VOICE_ID": "",  # 预建声音模型 ID（reference_id）
-    "TTS_DUB_SPEED": 1.0,  # 语速 0.5-2.0
-    "TTS_DUB_BACKGROUND_MODE": "separate_api",  # separate_api=云端分离(API) / separate=本地分离 / duck=压低原声
-    "TTS_DUB_DUCK_LEVEL": 0.03,  # duck 模式：语音窗原声压低倍数（0.03≈-30dB，越小原声让位越多、配音越突出）
-    "TTS_DUB_CUE_GAIN": 2.0,  # 合成配音音量增益倍率（fish.audio 输出偏低，2.0≈+6dB 使配音更突出清晰）
-    "TTS_DUB_TOLERANCE": 1.5,  # 句间空隙利用上限（秒，参考 VideoLingo tolerance）：配音变速判断把语音扩容到相邻静默空隙，减少超窗/超快
-    "TTS_DUB_SEPARATION_MODEL": "UVR_MDXNET_KARA_2.onnx",  # 分离模型文件名（audio-separator 本地模式）
-    "TTS_DUB_SEPARATION_API_URL": "https://api.free.ai/v1/music/separate/",  # 云端分离 API 地址（separate_api 模式）
-    "TTS_DUB_SEPARATION_API_KEY": "",  # 云端分离 API Key（自由 key，如 sk-free-...）
-    "TTS_DUB_SEPARATION_API_MODEL": "demucs",  # 云端分离模型（demucs）
-    "TTS_DUB_MAX_DURATION_MINUTES": 20,  # 超过该时长自动转压低模式（保护 CPU）
-    "TTS_DUB_MAX_RETRIES": 3,
-    "TTS_DUB_RETRY_DELAY": 2,
-    "TTS_DUB_MAX_WORKERS": 3,  # 逐句 TTS 合成并发数（网络 IO 型并发，3-5 合理；过高易触发限流）
+    # 双语字幕输出顺序：src_trans=英文在上/中文在下，trans_src=中文在上/英文在下
+    "SUBTITLE_OUTPUT_LANGS": "trans_src",  # 中英双语字幕行序（VideoLingo 风格）
+    "SUBTITLE_MAX_LENGTH": 22,  # 单条字幕最大字数（超过则切分成多条，Netflix 单行标准）
     # Whisper/OpenAI 兼容配置（可单独配置，未设置则回退到 OPENAI_*）
     "WHISPER_API_KEY": "",
     "WHISPER_BASE_URL": "",

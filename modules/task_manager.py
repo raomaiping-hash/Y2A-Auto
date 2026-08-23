@@ -338,7 +338,6 @@ TASK_STATES = {
     'DOWNLOADED': 'downloaded',           # 下载完成
     'ASR_TRANSCRIBING': 'asr_transcribing',  # 语音转写中
     'TRANSLATING_SUBTITLE': 'translating_subtitle',  # 正在翻译字幕
-    'DUBBING_AUDIO': 'dubbing_audio',     # 正在 TTS 配音（替换原声）
     'ENCODING_VIDEO': 'encoding_video',   # 正在转码视频
     'TRANSLATING': 'translating',         # 正在翻译
     'TAGGING': 'tagging',                 # 正在生成标签
@@ -379,7 +378,6 @@ PIPELINE_STAGE_RECOMMEND_PARTITION = 'recommend_partition'
 PIPELINE_STAGE_MODERATE_CONTENT = 'moderate_content'
 PIPELINE_STAGE_DOWNLOAD_VIDEO = 'download_video'
 PIPELINE_STAGE_TRANSLATE_SUBTITLE = 'translate_subtitle'
-PIPELINE_STAGE_DUB_AUDIO = 'dub_audio'
 PIPELINE_STAGE_UPLOAD_TO_ACFUN = 'upload_to_acfun'
 
 PIPELINE_STAGE_ORDER = [
@@ -390,7 +388,6 @@ PIPELINE_STAGE_ORDER = [
     PIPELINE_STAGE_MODERATE_CONTENT,
     PIPELINE_STAGE_DOWNLOAD_VIDEO,
     PIPELINE_STAGE_TRANSLATE_SUBTITLE,
-    PIPELINE_STAGE_DUB_AUDIO,
     PIPELINE_STAGE_UPLOAD_TO_ACFUN,
 ]
 
@@ -2008,10 +2005,9 @@ def retry_metadata_translation_task(task_id, config=None):
 
 def reprocess_task(task_id: str) -> bool:
     """重新处理任务：清空断点并置为 pending，让管线按断点推导跳过已完成阶段，
-    重跑字幕翻译与配音等后续阶段（主要用于给已就绪任务补配音）。
+    重跑字幕翻译等后续阶段（主要用于给就绪任务补译字幕）。
 
-    已有视频/元数据/标题等完成阶段由 _infer_completed_stages_from_task 推断为已完成而跳过；
-    配音阶段（dub_audio）不在推断列表里，故会重新执行。
+    已有视频/元数据/标题等完成阶段由 _infer_completed_stages_from_task 推断为已完成而跳过。
     """
     task = get_task(task_id)
     if not task:
@@ -2689,19 +2685,6 @@ class TaskProcessor:
                     if task is not None and task['status'] == TASK_STATES['FAILED']:
                         task_logger.error("字幕处理失败，继续执行后续步骤")
                 _raise_if_cancelled(task_id, task_logger)
-
-            # 5.5 TTS 配音（翻译字幕 → 语音替换原声，保留背景音）
-            if _as_bool(self.config.get('TTS_DUB_ENABLED', False)):
-                task = get_task(task_id)
-                if task and task.get('status') == TASK_STATES['FAILED']:
-                    task_logger.warning("任务已失败，跳过配音")
-                elif PIPELINE_STAGE_DUB_AUDIO in completed_stages:
-                    task_logger.info("跳过配音（checkpoint已完成）")
-                else:
-                    ok = self._maybe_dub_audio(task_id, task_logger)
-                    if ok:
-                        completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_DUB_AUDIO)
-                    _raise_if_cancelled(task_id, task_logger)
 
             # 6. 上传
             if self.config.get('AUTO_MODE_ENABLED', False):
@@ -3382,7 +3365,7 @@ class TaskProcessor:
                         return True
             
             # 合并 YouTube 自动字幕的渐进式重复（如"黎明将至"→"黎明将至，黑夜终将过去"），
-            # 避免烧录/翻译/配音出现重复文本
+            # 避免烧录/翻译出现重复文本
             subtitle_files = self._clean_subtitle_files(subtitle_files, task_logger)
 
             # 优化选择策略：若有中文字幕则直接烧录；否则优先选英文字幕进行翻译
@@ -3532,9 +3515,23 @@ class TaskProcessor:
                 
                 # 如果配置了将字幕嵌入视频
                 if should_embed_subtitle:
+                    # 生成中英双语字幕（参考 VideoLingo src_trans/trans_src），烧录双字幕
+                    from modules.bilingual_subtitles import build_bilingual_srt
+                    bilingual_path = os.path.join(task_dir, f"bilingual_{task_id}.srt")
+                    order = str(self.config.get('SUBTITLE_OUTPUT_LANGS') or 'trans_src')
+                    try:
+                        bilingual_path = build_bilingual_srt(
+                            subtitle_file, translated_subtitle_path, bilingual_path,
+                            order=order,
+                            source_is_zh=(str(subtitle_lang).lower() == 'zh'),
+                        ) or translated_subtitle_path
+                    except Exception as exc:
+                        task_logger.warning("生成双语字幕失败，退化为单语翻译字幕: %s", str(exc)[:160])
+                        bilingual_path = translated_subtitle_path
+                    burned_sub = bilingual_path if os.path.isfile(bilingual_path) else translated_subtitle_path
                     embedded_video_path = self._embed_subtitle_in_video(
-                        task_id, task['video_path_local'], 
-                        translated_subtitle_path, task_logger
+                        task_id, task['video_path_local'],
+                        burned_sub, task_logger
                     )
                     if embedded_video_path:
                         # 更新视频路径为嵌入字幕的版本
@@ -3542,7 +3539,7 @@ class TaskProcessor:
                             task_id,
                             video_path_local=embedded_video_path,
                             subtitle_path_original=subtitle_file,
-                            subtitle_path_translated=translated_subtitle_path,
+                            subtitle_path_translated=burned_sub,
                             subtitle_language_detected=subtitle_lang,
                             subtitle_warning_message=None,
                         )
@@ -6203,185 +6200,6 @@ class TaskProcessor:
                 task_logger.debug("字幕去重失败，使用原文件 %s: %s", path, exc)
             cleaned.append(path)
         return cleaned
-
-    def _maybe_dub_audio(self, task_id, task_logger):
-        """TTS 配音：翻译后字幕合成语音替换原声，保留背景音。
-
-        任何失败都降级为保留原音频（不影响任务最终状态），
-        成功则将 video_path_local 指向 video_dubbed.mp4。
-        """
-        from .tts_dub import TtsDubError, build_dubbed_audio, mux_dubbed_video  # 惰性导入
-
-        task = get_task(task_id)
-        if not task:
-            task_logger.error("任务不存在，跳过配音")
-            return True
-        video_path = str(task.get('video_path_local') or '').strip()
-        if not video_path or not os.path.isfile(video_path):
-            task_logger.warning("视频文件不存在，跳过配音")
-            return True
-
-        # 配音文本来源：优先翻译后字幕；否则用烧录/原字幕（如中文源视频直接烧录，无翻译文件）
-        subtitle_path = self._resolve_dub_subtitle(task, os.path.dirname(video_path), task_logger)
-        if not subtitle_path:
-            task_logger.warning("无可用字幕文件，跳过配音")
-            return True
-
-        update_task(task_id, status=TASK_STATES['DUBBING_AUDIO'])
-        task_dir = os.path.dirname(video_path)
-
-        def _restore_status_if_still_dubbing():
-            """配音中断/失败/跳过时恢复任务状态，避免一直卡在"配音中"。"""
-            try:
-                current = get_task(task_id)
-                if current and current.get('status') == TASK_STATES['DUBBING_AUDIO']:
-                    update_task(task_id, status=TASK_STATES['READY_FOR_UPLOAD'], silent=True)
-            except Exception:
-                pass
-
-        original_srt = str(task.get('subtitle_path_original') or '').strip()
-        dubbed_audio, warnings, aligned_srt = build_dubbed_audio(
-            task_dir,
-            video_path,
-            subtitle_path,
-            original_srt if os.path.isfile(original_srt) else None,
-            self.config,
-            task_logger,
-        )
-        for warning in warnings:
-            task_logger.warning(warning)
-
-        if not dubbed_audio or not os.path.isfile(dubbed_audio):
-            task_logger.warning("配音未完成，保留原音频继续")
-            _restore_status_if_still_dubbing()
-            return True
-
-        try:
-            from .ffmpeg_manager import get_ffmpeg_path
-            ffmpeg_bin = get_ffmpeg_path(logger=task_logger)
-            out_mp4 = os.path.join(task_dir, 'video_dubbed.mp4')
-            # 输入不能与输出同名：video_path 可能是上一轮配音的 video_dubbed.mp4
-            mux_input = video_path
-            if os.path.basename(video_path) == 'video_dubbed.mp4':
-                mux_input = next(
-                    (p for p in (
-                        os.path.join(task_dir, 'video_with_subtitle.mp4'),
-                        os.path.join(task_dir, 'video.mp4'),
-                    ) if os.path.isfile(p)),
-                    video_path,
-                )
-                if mux_input == video_path:
-                    task_logger.warning("未找到可作为配音输入的基础视频，保留原音频")
-                    _restore_status_if_still_dubbing()
-                    return True
-            # 画面字幕一致性：若流水线生成了"画面字幕=旁白"的对齐字幕，烧录到干净画面，
-            # 使成片看到的字幕与配音旁白完全对得上（否则烧录的是逐句翻译字幕，与整段旁白不一致）。
-            if aligned_srt and os.path.isfile(aligned_srt):
-                base_clean = os.path.join(task_dir, 'video.mp4')
-                if os.path.isfile(base_clean):
-                    try:
-                        burned = self._embed_subtitle_in_video(task_id, base_clean, aligned_srt, task_logger)
-                        if burned and os.path.isfile(burned):
-                            mux_input = burned
-                            task_logger.info("已烧录对齐旁白字幕（画面字幕=旁白）: %s", burned)
-                        else:
-                            task_logger.warning("对齐旁白字幕烧录失败，沿用现有画面字幕")
-                    except Exception as exc:  # noqa: BLE001
-                        task_logger.warning("对齐旁白字幕烧录异常，沿用现有画面字幕: %s", str(exc)[:160])
-                else:
-                    task_logger.warning("无干净基础视频（video.mp4），跳过对齐旁白字幕烧录")
-            mux_dubbed_video(mux_input, dubbed_audio, out_mp4, ffmpeg_bin, task_logger)
-            if not os.path.isfile(out_mp4):
-                task_logger.warning("配音视频封装失败，保留原音频")
-                _restore_status_if_still_dubbing()
-                return True
-            # 只清 cue 级临时文件，保留伴奏分离结果（instrumental/vocals），
-            # 下次重跑配音可直接复用分离结果，避免重新推理（很慢）
-            try:
-                tmp_dir = os.path.join(task_dir, '_dub_tmp')
-                if os.path.isdir(tmp_dir):
-                    for name in os.listdir(tmp_dir):
-                        lower = name.lower()
-                        if lower.endswith(('.mp3', '_placed.wav', '_fitted.wav', '_raw.mp3')):
-                            os.remove(os.path.join(tmp_dir, name))
-                        elif lower in ('dubbed.wav', 'base_duck.wav'):
-                            os.remove(os.path.join(tmp_dir, name))
-            except Exception:
-                pass
-            update_task(task_id, video_path_local=out_mp4)
-            task_logger.info("配音完成：%s", out_mp4)
-            _restore_status_if_still_dubbing()
-            return True
-        except TtsDubError as exc:
-            task_logger.warning("配音封装失败，保留原音频：%s", exc)
-            _restore_status_if_still_dubbing()
-            return True
-        except Exception as exc:  # noqa: BLE001
-            task_logger.warning("配音封装异常，保留原音频：%s", str(exc)[:200])
-            _restore_status_if_still_dubbing()
-            return True
-
-    @staticmethod
-    def _resolve_dub_subtitle(task, task_dir, task_logger):
-        """解析配音文本来源字幕文件：翻译后 → 原始 → 任务目录 srt（中文优先）。
-
-        返回的均为合并渐进式重复后的 cleaned 副本（缺则现场生成）。
-        """
-        from .srt_transform_engine import SrtTransformConfig, SrtTransformEngine
-        engine = SrtTransformEngine(SrtTransformConfig())
-
-        def _ensure_cleaned(path):
-            if not path or not os.path.isfile(path) or not path.lower().endswith('.srt'):
-                return path
-            if path.endswith('.cleaned.srt'):
-                return path
-            cleaned_path = path[:-4] + '.cleaned.srt'
-            # 若源字幕比 cleaned 新（字幕被重新生成/切分对齐），则重新生成 cleaned，避免用旧缓存
-            if os.path.isfile(cleaned_path):
-                try:
-                    if os.path.getmtime(path) <= os.path.getmtime(cleaned_path):
-                        return cleaned_path
-                except OSError:
-                    return cleaned_path
-            try:
-                with open(path, 'r', encoding='utf-8', errors='replace') as fh:
-                    text = engine.clean_srt_text(fh.read())
-                if text:
-                    with open(cleaned_path, 'w', encoding='utf-8') as fh:
-                        fh.write(text)
-                    return cleaned_path
-            except Exception:
-                pass
-            return path
-
-        for key in ('subtitle_path_translated', 'subtitle_path_original'):
-            p = str(task.get(key) or '').strip()
-            if p and os.path.isfile(p):
-                return _ensure_cleaned(p)
-
-        srt_candidates = []
-        try:
-            for name in os.listdir(task_dir):
-                if not isinstance(name, str) or not name.lower().endswith('.srt'):
-                    continue
-                # 跳过流水线生成的对齐旁白字幕（它是配音产物，不是配音文本来源，避免自指）
-                if 'dub-aligned' in name.lower():
-                    continue
-                full = os.path.join(task_dir, name)
-                if os.path.isfile(full):
-                    srt_candidates.append((name.lower(), full))
-        except OSError:
-            return None
-        # 优先 cleaned 副本，其次中文
-        cleaned_candidates = [f for n, f in srt_candidates if n.endswith('.cleaned.srt')]
-        zh_candidates = [f for n, f in srt_candidates if 'zh' in n and not n.endswith('.cleaned.srt')]
-        if cleaned_candidates:
-            return cleaned_candidates[0]
-        if zh_candidates:
-            return _ensure_cleaned(zh_candidates[0])
-        if srt_candidates:
-            return _ensure_cleaned(srt_candidates[0][1])
-        return None
 
     def _embed_subtitle_in_video(self, task_id, video_path, subtitle_path, task_logger):
         """使用FFmpeg将字幕嵌入视频（修复版本 - 添加超时机制）"""

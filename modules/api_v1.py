@@ -389,7 +389,6 @@ def _attach_preview_info(task):
     except (ValueError, OSError):
         return task
     for name, kind in (
-        ('video_dubbed.mp4', 'dubbed'),
         ('video_with_subtitle.mp4', 'embedded'),
         ('video.mp4', 'original'),
     ):
@@ -578,64 +577,17 @@ def tasks_retry_failed():
 @api_bp.post('/tasks/<task_id>/reprocess')
 @api_protected
 def task_reprocess(task_id):
-    """重新处理任务：重置断点并置待处理，重跑字幕翻译与配音等后续阶段。"""
+    """重新处理任务：重置断点并置待处理，重跑字幕翻译等后续阶段。"""
     from .task_manager import reprocess_task
     try:
         if not reprocess_task(task_id):
             return _error('任务不存在，无法重新处理', 404)
-        return _ok('已重新调度：将按断点跳过已完成阶段并补跑字幕翻译/配音')
+        return _ok('已重新调度：将按断点跳过已完成阶段并补跑字幕翻译')
     except Exception as e:
         logger.error('重新处理任务 %s 失败: %s', task_id, e)
         return _error('重新处理失败', 500)
 
 
-@api_bp.post('/tasks/<task_id>/dub')
-@api_protected
-def task_dub(task_id):
-    """用现有视频+字幕文件一次性生成配音（后台线程执行，无需整条管线重跑）。"""
-    config = load_config()
-    api_key = str(config.get('TTS_DUB_API_KEY') or '').strip()
-    if not api_key:
-        return _error('未配置 TTS_DUB_API_KEY（语音配音分组）', 400)
-    task = get_task(task_id)
-    if not task:
-        return _error('任务不存在', 404)
-    video_path = str(task.get('video_path_local') or '').strip()
-    if not video_path or not os.path.isfile(video_path):
-        return _error('本地视频文件不存在，请先完成下载/处理', 400)
-
-    has_srt = False
-    try:
-        task_dir = os.path.dirname(video_path)
-        has_srt = any(str(f).lower().endswith('.srt') for f in os.listdir(task_dir))
-    except OSError:
-        pass
-    if not (str(task.get('subtitle_path_translated') or '').strip()
-            or str(task.get('subtitle_path_original') or '').strip() or has_srt):
-        return _error('任务没有可用字幕文件，无法生成配音', 400)
-
-    logger = setup_task_logger(task_id)
-    update_task(task_id, status='dubbing_audio')
-
-    processor = get_global_task_processor(config)
-
-    def _dub_worker():
-        try:
-            processor._maybe_dub_audio(task_id, logger)
-        finally:
-            current = get_task(task_id)
-            if current and current.get('status') == 'dubbing_audio':
-                update_task(task_id, status=TASK_STATES['READY_FOR_UPLOAD'])
-
-    threading.Thread(
-        target=_dub_worker,
-        daemon=True,
-        name=f'task-dub-{task_id[:8]}',
-    ).start()
-    return _ok('配音生成已启动，可稍后在详情页预览成品·配音')
-
-
-@api_bp.post('/tasks/reset_stuck')
 @api_protected
 def tasks_reset_stuck():
     from .task_manager import reset_stuck_tasks
@@ -812,7 +764,6 @@ def task_video_preview(task_id):
         return _error('任务目录无效', 404)
 
     candidates = [
-        _app()._safe_join_task_dir(task_dir_real, 'video_dubbed.mp4'),
         _app()._safe_join_task_dir(task_dir_real, 'video_with_subtitle.mp4'),
         _app()._safe_join_task_dir(task_dir_real, 'video.mp4'),
     ]
@@ -1055,142 +1006,6 @@ def settings_tgbot_token():
     return _error('未知的 Token 操作。')
 
 
-@api_bp.post('/settings/tts/test')
-@api_protected
-def settings_test_tts():
-    """合成一小段语音验证 fish.audio 配置（真实调用，返回时长）。"""
-    payload = request.get_json(silent=True) or {}
-    text = str(payload.get('text') or '').strip() or '这是一段语音合成测试。'
-    config = load_config()
-    api_key = str(config.get('TTS_DUB_API_KEY') or '').strip()
-    if not api_key:
-        return _error('未配置 TTS_DUB_API_KEY（语音配音分组）', 400)
-    try:
-        from .tts_dub import FishAudioTtsClient
-        client = FishAudioTtsClient(
-            api_key=api_key,
-            base_url=str(config.get('TTS_DUB_BASE_URL') or 'https://api.fish.audio'),
-            model=str(config.get('TTS_DUB_MODEL') or 's2.1-pro-free'),
-            max_retries=int(config.get('TTS_DUB_MAX_RETRIES') or 1),
-            retry_delay_s=0,
-        )
-        audio = client.synthesize(text, speed=float(config.get('TTS_DUB_SPEED') or 1.0))
-        duration_ms = 0
-        with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp:
-            tmp.write(audio)
-            tmp_path = tmp.name
-        try:
-            from .ffmpeg_manager import get_ffprobe_path, get_ffmpeg_path
-            ffmpeg = get_ffmpeg_path()
-            if ffmpeg and os.path.exists(ffmpeg):
-                ffprobe = get_ffprobe_path(ffmpeg_path=ffmpeg)
-                if ffprobe:
-                    out = subprocess.run(
-                        [ffprobe, '-v', 'error', '-show_entries', 'format=duration',
-                         '-of', 'default=noprint_wrappers=1:nokey=1', tmp_path],
-                        capture_output=True, text=True, timeout=60,
-                    )
-                    duration_ms = int(float(str(out.stdout or '').strip() or 0) * 1000)
-        finally:
-            try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
-        return jsonify({
-            'success': True,
-            'message': f'合成成功（{duration_ms}ms）',
-            'duration_ms': duration_ms,
-            'model': str(config.get('TTS_DUB_MODEL') or ''),
-        })
-    except Exception as exc:
-        return _error(f'合成测试失败: {str(exc)[:200]}', 502)
-
-
-@api_bp.get('/settings/tts/voices')
-@api_protected
-def settings_tts_voices():
-    """浏览 fish.audio 公开说话人库（Voice Library）。"""
-    config = load_config()
-    api_key = str(config.get('TTS_DUB_API_KEY') or '').strip()
-    if not api_key:
-        return _error('未配置 TTS_DUB_API_KEY（语音配音分组）', 400)
-
-    page = int(request.args.get('page') or 1)
-    page_size = min(int(request.args.get('page_size') or 30), 50)
-    query = str(request.args.get('q') or '').strip()[:80]
-
-    params = {'page_size': page_size, 'page_number': max(1, page)}
-    if query:
-        params['title'] = query
-    try:
-        resp = httpx.get(
-            'https://api.fish.audio/model',
-            params=params,
-            headers={'Authorization': f'Bearer {api_key}'},
-            timeout=20,
-        )
-    except Exception as exc:
-        return _error(f'获取说话人列表失败: {str(exc)[:150]}', 502)
-    if resp.status_code != 200:
-        return _error(f'Fish Audio 返回 {resp.status_code}: {resp.text[:150]}', 502)
-
-    data = resp.json() or {}
-    items = []
-    for model in (data.get('items') or []):
-        if not isinstance(model, dict):
-            continue
-        voice_id = str(model.get('_id') or model.get('id') or '').strip()
-        if not voice_id:
-            continue
-        items.append({
-            'id': voice_id,
-            'title': str(model.get('title') or '').strip(),
-            'state': str(model.get('state') or ''),
-            'languages': [str(x) for x in (model.get('languages') or [])],
-            'tags': [str(x) for x in (model.get('tags') or [])],
-            'description': str(model.get('description') or '')[:200],
-        })
-    return jsonify({
-        'success': True,
-        'total': int(data.get('total') or len(items)),
-        'has_more': bool(data.get('has_more', False)),
-        'items': items,
-    })
-
-
-@api_bp.post('/settings/tts/preview')
-@api_protected
-def settings_tts_preview():
-    """按指定说话人合成试听音频（约 1-2 秒文本，返回 base64 mp3）。"""
-    payload = request.get_json(silent=True) or {}
-    voice_id = str(payload.get('voice_id') or '').strip()
-    if not voice_id:
-        return _error('缺少 voice_id', 400)
-    config = load_config()
-    api_key = str(config.get('TTS_DUB_API_KEY') or '').strip()
-    if not api_key:
-        return _error('未配置 TTS_DUB_API_KEY（语音配音分组）', 400)
-    try:
-        from .tts_dub import FishAudioTtsClient
-        client = FishAudioTtsClient(
-            api_key=api_key,
-            model=str(config.get('TTS_DUB_MODEL') or 's2.1-pro-free'),
-            max_retries=int(config.get('TTS_DUB_MAX_RETRIES') or 1),
-            retry_delay_s=0,
-        )
-        audio = client.synthesize('你好，这是 Y2A-Auto 配音功能的试听语音。', reference_id=voice_id)
-        return jsonify({
-            'success': True,
-            'audio_base64': base64.encodebytes(audio).decode('ascii'),
-            'mime': 'audio/mpeg',
-            'voice_id': voice_id,
-        })
-    except Exception as exc:
-        return _error(f'试听合成失败: {str(exc)[:200]}', 502)
-
-
-@api_bp.post('/settings/notifications/test')
-@api_protected
 def settings_test_notification():
     payload = request.get_json(silent=True) or {}
     channel = str(payload.get('channel') or '').strip()

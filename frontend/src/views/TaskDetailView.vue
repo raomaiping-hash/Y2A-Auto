@@ -260,30 +260,12 @@ onBeforeUnmount(() => {
 const canStart = computed(() => ['pending', 'failed'].includes(task.value?.status ?? ''))
 const canForceUpload = computed(() => ['awaiting_manual_review', 'ready_for_upload', 'completed', 'failed'].includes(task.value?.status ?? ''))
 const canReprocess = computed(() => ['ready_for_upload', 'failed'].includes(task.value?.status ?? ''))
-const canDub = computed(() => {
-  const status = task.value?.status ?? ''
-  return (
-    ['ready_for_upload', 'completed', 'awaiting_manual_review', 'failed'].includes(status)
-    && task.value?.preview_kind !== 'dubbed'
-  )
-})
-
-async function generateDub() {
-  if (!task.value) return
-  try {
-    const res = await tasksApi.dub(task.value.id)
-    toast.success(res.message || '配音生成已启动')
-    task.value.status = 'dubbing_audio' as Task['status']
-  } catch (e) {
-    toast.error('启动配音失败', e instanceof ApiError ? e.message : '请稍后重试')
-  }
-}
 
 function reprocess() {
   confirmState.value = {
     open: true,
     title: '重新处理',
-    message: '将重置断点并重跑字幕翻译、配音等后续阶段（已完成的下载/翻译等会跳过）。确定继续吗？',
+    message: '将重置断点并重跑字幕翻译等后续阶段（已完成的下载/翻译等会跳过）。确定继续吗？',
     action: async () => {
       await tasksApi.reprocess(taskId.value)
       toast.success('已重新调度，请稍后查看进度')
@@ -293,14 +275,12 @@ function reprocess() {
 }
 
 const previewKindText = computed(() => {
-  if (task.value?.preview_kind === 'dubbed') return '成品·配音'
-  if (task.value?.preview_kind === 'embedded') return '成品（已烧录翻译字幕）'
+  if (task.value?.preview_kind === 'embedded') return '成品（已烧录双语字幕）'
   if (task.value?.preview_kind === 'original') return '原片'
   return '本地文件'
 })
 
 const previewBadgeClass = computed(() => {
-  if (task.value?.preview_kind === 'dubbed') return 'badge-success'
   if (task.value?.preview_kind === 'embedded') return 'badge-success'
   if (task.value?.preview_kind === 'original') return 'badge-secondary'
   return 'badge-secondary'
@@ -327,10 +307,7 @@ function formatTime(dt?: string): string {
         <p class="page-subtitle mono">{{ taskId }}</p>
       </div>
       <div class="page-actions" v-if="task">
-        <button v-if="canDub" class="btn btn-secondary btn-sm" title="用现有字幕文件一次性合成配音并替换原声" @click="generateDub">
-          <i class="bi bi-mic-fill"></i> 生成配音
-        </button>
-        <button v-if="canReprocess" class="btn btn-secondary btn-sm" title="重置断点并重跑字幕翻译/配音等后续阶段" @click="reprocess">
+        <button v-if="canReprocess" class="btn btn-secondary btn-sm" title="重置断点并重跑字幕翻译等后续阶段" @click="reprocess">
           <i class="bi bi-arrow-repeat"></i> 重新处理
         </button>
         <button v-if="canStart" class="btn btn-primary btn-sm" @click="startTask">
