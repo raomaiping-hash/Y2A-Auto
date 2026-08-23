@@ -66,7 +66,7 @@ class FishAudioClientTests(unittest.TestCase):
         resp = Mock()
         resp.status_code = 200
         resp.content = b'audio-bytes'
-        with patch.object(tts_dub.httpx, 'post', return_value=resp) as post_mock:
+        with patch.object(tts_dub.httpx.Client, "post", return_value=resp) as post_mock:
             audio = self.client.synthesize('测试文本')
         self.assertEqual(audio, b'audio-bytes')
         kwargs = post_mock.call_args.kwargs
@@ -78,7 +78,7 @@ class FishAudioClientTests(unittest.TestCase):
         resp = Mock()
         resp.status_code = 200
         resp.content = b'audio-bytes'
-        with patch.object(tts_dub.httpx, 'post', return_value=resp) as post_mock:
+        with patch.object(tts_dub.httpx.Client, "post", return_value=resp) as post_mock:
             self.client.synthesize('文本', reference_audio=b'\x00\x01', reference_text='样本')
         body = post_mock.call_args.kwargs['json']
         self.assertEqual(body['references'][0]['audio'], base64.b64encode(b'\x00\x01').decode())
@@ -89,7 +89,7 @@ class FishAudioClientTests(unittest.TestCase):
         resp = Mock()
         resp.status_code = 200
         resp.content = b'audio'
-        with patch.object(tts_dub.httpx, 'post', return_value=resp) as post_mock:
+        with patch.object(tts_dub.httpx.Client, "post", return_value=resp) as post_mock:
             self.client.synthesize('文本', reference_id='model-id', reference_audio=b'\x00')
         body = post_mock.call_args.kwargs['json']
         self.assertEqual(body['reference_id'], 'model-id')
@@ -102,7 +102,7 @@ class FishAudioClientTests(unittest.TestCase):
         ok = Mock()
         ok.status_code = 200
         ok.content = b'audio'
-        with patch.object(tts_dub.httpx, 'post', side_effect=[fail, ok]) as post_mock:
+        with patch.object(tts_dub.httpx.Client, 'post', side_effect=[fail, ok]) as post_mock:
             audio = self.client.synthesize('文本')
         self.assertEqual(audio, b'audio')
         self.assertEqual(post_mock.call_count, 2)
@@ -111,7 +111,7 @@ class FishAudioClientTests(unittest.TestCase):
         fail = Mock()
         fail.status_code = 401
         fail.text = 'unauthorized'
-        with patch.object(tts_dub.httpx, 'post', return_value=fail):
+        with patch.object(tts_dub.httpx.Client, 'post', return_value=fail):
             with self.assertRaises(TtsDubError):
                 self.client.synthesize('文本')
 

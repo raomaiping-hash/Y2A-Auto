@@ -177,6 +177,7 @@ DEFAULT_CONFIG = {
     "TTS_DUB_MAX_DURATION_MINUTES": 20,  # 超过该时长自动转压低模式（保护 CPU）
     "TTS_DUB_MAX_RETRIES": 3,
     "TTS_DUB_RETRY_DELAY": 2,
+    "TTS_DUB_MAX_WORKERS": 3,  # 逐句 TTS 合成并发数（网络 IO 型并发，3-5 合理；过高易触发限流）
     # Whisper/OpenAI 兼容配置（可单独配置，未设置则回退到 OPENAI_*）
     "WHISPER_API_KEY": "",
     "WHISPER_BASE_URL": "",

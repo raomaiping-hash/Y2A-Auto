@@ -176,6 +176,7 @@ const SECTIONS: SectionDef[] = [
       { key: 'TTS_DUB_MAX_DURATION_MINUTES', label: '分离上限（分钟）', type: 'number', hint: '超过自动转压低模式（保护 CPU）' },
       { key: 'TTS_DUB_MAX_RETRIES', label: '合成重试次数', type: 'number' },
       { key: 'TTS_DUB_RETRY_DELAY', label: '重试延迟（秒）', type: 'number' },
+      { key: 'TTS_DUB_MAX_WORKERS', label: '合成并发数', type: 'number', hint: '逐句 TTS 并发合成，3-5 合理；过高易触发限流' },
       { key: 'VOXTRAL_API_KEY', label: 'Voxtral API Key', type: 'password', sensitive: true },
       { key: 'VOXTRAL_BASE_URL', label: 'Voxtral 地址', type: 'text' },
       { key: 'VOXTRAL_MODEL_NAME', label: 'Voxtral 模型', type: 'text' },

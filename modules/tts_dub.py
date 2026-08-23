@@ -107,6 +107,8 @@ class FishAudioTtsClient:
         self.max_retries = int(max_retries)
         self.retry_delay_s = float(retry_delay_s)
         self.logger = logger or logging.getLogger(__name__)
+        # 复用连接池（httpx.Client 线程安全），避免并发合成时重复 HTTPS/TLS 握手
+        self._client = httpx.Client(timeout=self.timeout_s)
 
     def synthesize(
         self,
@@ -153,7 +155,7 @@ class FishAudioTtsClient:
         last_error = ''
         for attempt in range(1, self.max_retries + 1):
             try:
-                resp = httpx.post(url, json=body, headers=headers, timeout=self.timeout_s)
+                resp = self._client.post(url, json=body, headers=headers)
             except Exception as exc:  # 网络异常
                 last_error = f'{type(exc).__name__}: {str(exc)[:160]}'
                 self.logger.warning('fish.audio TTS 请求失败（第 %d/%d 次）: %s', attempt, self.max_retries, last_error)
@@ -603,7 +605,7 @@ def build_dubbed_audio(
         else:
             logger.info('参考音色：默认音色')
 
-        # 4. 逐 cue 合成 + 拟合 + 定位
+        # 4. 逐 cue 合成 + 拟合 + 定位（并发：合成是网络 IO，单条串行往返是最大瓶颈）
         client = FishAudioTtsClient(
             api_key=api_key,
             base_url=str(config.get('TTS_DUB_BASE_URL') or DEFAULT_BASE_URL),
@@ -613,40 +615,55 @@ def build_dubbed_audio(
             logger=logger,
         )
         base_speed = float(config.get('TTS_DUB_SPEED') or 1.0)
+        max_workers = int(config.get('TTS_DUB_MAX_WORKERS') or 3)
 
-        overlays: List[str] = []
-        placed_count = 0
-        for idx, cue in enumerate(usable_cues, 1):
+        def _synth_cue(idx: int, cue: Dict[str, Any]):
             start_s = float(cue['start'])
             window_s = max(float(cue['end']) - start_s, _MIN_CUE_DURATION_S)
             text = str(cue.get('text') or '').strip()
             if not text:
-                continue
-            try:
-                raw = client.synthesize(
-                    text,
-                    reference_id=reference_id,
-                    reference_audio=reference_audio,
-                    reference_text=reference_text,
-                    speed=base_speed,
-                )
-                raw_path = os.path.join(tmp_dir, f'cue_{idx:04d}_raw.mp3')
-                with open(raw_path, 'wb') as fh:
-                    fh.write(raw)
-                tts_duration = probe_duration(raw_path, ffprobe, logger)
-                fit_speed = fit_cue_speed(tts_duration, window_s)
-                if fit_speed > 1.0:
-                    fitted_path = os.path.join(tmp_dir, f'cue_{idx:04d}_fitted.wav')
-                    fit_audio_speed(raw_path, fit_speed, fitted_path, ffmpeg, logger)
-                else:
-                    fitted_path = raw_path
-                placed_path = os.path.join(tmp_dir, f'cue_{idx:04d}_placed.wav')
-                place_audio_at(fitted_path, start_s, placed_path, ffmpeg, logger)
-                overlays.append(placed_path)
-                placed_count += 1
-            except Exception as exc:
-                warnings.append(f'cue #{idx} 合成失败: {str(exc)[:120]}')
-                logger.warning('cue #%d/%d 合成失败: %s', idx, len(usable_cues), exc)
+                return idx, None, None
+            raw = client.synthesize(
+                text,
+                reference_id=reference_id,
+                reference_audio=reference_audio,
+                reference_text=reference_text,
+                speed=base_speed,
+            )
+            raw_path = os.path.join(tmp_dir, f'cue_{idx:04d}_raw.mp3')
+            with open(raw_path, 'wb') as fh:
+                fh.write(raw)
+            tts_duration = probe_duration(raw_path, ffprobe, logger)
+            fit_speed = fit_cue_speed(tts_duration, window_s)
+            if fit_speed > 1.0:
+                fitted_path = os.path.join(tmp_dir, f'cue_{idx:04d}_fitted.wav')
+                fit_audio_speed(raw_path, fit_speed, fitted_path, ffmpeg, logger)
+            else:
+                fitted_path = raw_path
+            placed_path = os.path.join(tmp_dir, f'cue_{idx:04d}_placed.wav')
+            place_audio_at(fitted_path, start_s, placed_path, ffmpeg, logger)
+            return idx, placed_path, None
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        overlays: List[str] = []
+        placed_slots: List[Tuple[int, str]] = []
+        placed_count = 0
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix='dub') as executor:
+            futures = {
+                executor.submit(_synth_cue, idx, cue): idx
+                for idx, cue in enumerate(usable_cues, 1)
+            }
+            for fut in as_completed(futures):
+                idx, path, err = fut.result()
+                if err:
+                    warnings.append(f'cue #{idx} 合成失败: {str(err)[:120]}')
+                    logger.warning('cue #%d/%d 合成失败: %s', idx, len(usable_cues), err)
+                elif path:
+                    placed_slots.append((idx, path))
+                    placed_count += 1
+        # 按 idx 排序，保证混音顺序稳定（不依赖任务完成时序）
+        placed_slots.sort(key=lambda x: x[0])
+        overlays = [p for _, p in placed_slots]
 
         if not overlays:
             warnings.append('全部 cue 合成失败，保留原音频')
