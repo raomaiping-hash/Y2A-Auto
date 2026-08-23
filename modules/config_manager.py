@@ -28,11 +28,11 @@ _VIDEO_CPU_PRESET_HD_DEFAULT = 'veryfast'
 # 默认配置
 DEFAULT_CONFIG = {
     "AUTO_MODE_ENABLED": False, # 无人值守自动投稿总开关
-    "TRANSLATE_TITLE": False,
-    "TRANSLATE_DESCRIPTION": False,
+    "TRANSLATE_TITLE": True,  # 默认开启标题 AI 翻译（默认 False 会导致流水线静默跳过，任务缺译名）
+    "TRANSLATE_DESCRIPTION": True,  # 默认开启简介 AI 翻译
     "UPLOAD_APPEND_REPOST_NOTICE": True,
     "DELETE_DOWNLOAD_FILES_AFTER_UPLOAD": False, # 上传全部成功后是否立即删除任务下载文件
-    "GENERATE_TAGS": False,
+    "GENERATE_TAGS": True,  # 默认开启标签生成（否则上传时标签为空）
     "YOUTUBE_UPLOADER_AS_FIRST_TAG": False,
     "RECOMMEND_PARTITION": False,
     "RECOMMEND_PARTITION_WITH_COVER": False,

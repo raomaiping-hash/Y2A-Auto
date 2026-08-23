@@ -2603,7 +2603,23 @@ class TaskProcessor:
                 completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_FETCH_INFO)
 
             # 2. 翻译/标签/分区推荐（如有需要）
-            if self.config.get('TRANSLATE_TITLE', True) or self.config.get('TRANSLATE_DESCRIPTION', True):
+            translate_enabled = (
+                self.config.get('TRANSLATE_TITLE', True)
+                or self.config.get('TRANSLATE_DESCRIPTION', True)
+            )
+            # 兜底：即使配置关闭翻译，只要任务仍有未译的原文标题/简介，就显式提示，
+            # 避免“静默跳过”导致上传时只用英文原文（此前多次踩坑）。
+            if not translate_enabled:
+                has_untranslated_meta = bool(
+                    (task.get('video_title_original') and not task.get('video_title_translated'))
+                    or (task.get('description_original') and not task.get('description_translated'))
+                )
+                if has_untranslated_meta:
+                    task_logger.warning(
+                        "检测到标题/简介翻译未启用但有未翻译的原文，任务将回退原文上传；"
+                        "如需 AI 翻译请开启 TRANSLATE_TITLE/TRANSLATE_DESCRIPTION。"
+                    )
+            if translate_enabled:
                 if PIPELINE_STAGE_TRANSLATE_CONTENT in completed_stages:
                     task_logger.info("跳过标题/描述翻译（checkpoint已完成）")
                 else:

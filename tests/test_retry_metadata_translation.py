@@ -9,6 +9,14 @@ from modules import api_v1 as av
 
 
 class RetryMetadataTranslationTests(unittest.TestCase):
+    def test_default_translation_flags_enabled(self):
+        """TRANSLATE_TITLE/DESCRIPTION/GENERATE_TAGS 默认开启，避免流水线静默跳过翻译。"""
+        from modules import config_manager as cm
+        defaults = cm.DEFAULT_CONFIG
+        self.assertTrue(defaults.get('TRANSLATE_TITLE'))
+        self.assertTrue(defaults.get('TRANSLATE_DESCRIPTION'))
+        self.assertTrue(defaults.get('GENERATE_TAGS'))
+
     def test_retryable_only_accepts_translation_failures_in_manual_review(self):
         self.assertTrue(tm.is_metadata_translation_retryable({
             'status': tm.TASK_STATES['AWAITING_REVIEW'],
