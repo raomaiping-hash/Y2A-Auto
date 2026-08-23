@@ -1137,26 +1137,22 @@ class YouTubeMonitor:
         if not video_ids:
             return []
         
-        # 获取视频详细信息（带重试）
+        # 获取视频详细信息（带重试，分批避免单次 id 超 50 上限）
         logger.debug(f"准备执行视频详情请求，YouTube API 对象: {type(self.youtube)}")
-        videos_request = self.youtube.videos().list(
-            part='id,snippet,statistics,contentDetails,liveStreamingDetails',
-            id=','.join(video_ids)
-        )
-        logger.debug(f"视频详情请求已创建: {type(videos_request)}")
-        videos_response = self._execute_with_retry(videos_request, 'videos.list')
-        
-        # 添加调试日志 - 检查视频响应
-        logger.debug(f"视频响应类型: {type(videos_response)}, 值: {videos_response}")
-        if videos_response is None:
-            logger.error("视频响应为 None")
-            return []
-        
-        if 'items' not in videos_response:
-            logger.error(f"视频响应中缺少 'items' 字段，响应内容: {videos_response}")
-            return []
-        
-        return videos_response['items']
+        API_MAX_IDS_PER_REQUEST = 50
+        all_videos = []
+        for i in range(0, len(video_ids), API_MAX_IDS_PER_REQUEST):
+            batch_ids = video_ids[i:i + API_MAX_IDS_PER_REQUEST]
+            videos_request = self.youtube.videos().list(
+                part='id,snippet,statistics,contentDetails,liveStreamingDetails',
+                id=','.join(batch_ids)
+            )
+            videos_response = self._execute_with_retry(
+                videos_request, f'videos.list (batch {i // API_MAX_IDS_PER_REQUEST + 1})'
+            )
+            if videos_response and 'items' in videos_response:
+                all_videos.extend(videos_response['items'])
+        return all_videos
     
     def _fetch_channel_videos(self, config: Dict[str, Any], published_after: str, published_before: Optional[str] = None) -> List[Dict[str, Any]]:
         """从指定频道获取视频"""
@@ -1269,14 +1265,21 @@ class YouTubeMonitor:
                 logger.info(f"频道 {channel_id} 搜索无结果")
                 return []
             
-            # 获取视频详细信息（带重试）
+            # 获取视频详细信息（带重试，分批避免单次 id 超 50 上限）
             logger.debug(f"准备执行频道视频详情请求，YouTube API 对象: {type(self.youtube)}")
-            videos_request = self.youtube.videos().list(
-                part='id,snippet,statistics,contentDetails,liveStreamingDetails',
-                id=','.join(video_ids)
-            )
-            logger.debug(f"频道视频详情请求已创建: {type(videos_request)}")
-            videos_response = self._execute_with_retry(videos_request, f'videos.list (channel {channel_id})')
+            API_MAX_IDS_PER_REQUEST = 50
+            all_videos = []
+            for i in range(0, len(video_ids), API_MAX_IDS_PER_REQUEST):
+                batch_ids = video_ids[i:i + API_MAX_IDS_PER_REQUEST]
+                videos_request = self.youtube.videos().list(
+                    part='id,snippet,statistics,contentDetails,liveStreamingDetails',
+                    id=','.join(batch_ids)
+                )
+                videos_response = self._execute_with_retry(
+                    videos_request, f'videos.list (channel {channel_id}, batch {i // API_MAX_IDS_PER_REQUEST + 1})'
+                )
+                all_videos.extend(videos_response['items'])
+            videos_response = {'items': all_videos}
             
             # 添加调试日志 - 检查频道视频响应
             logger.debug(f"频道视频响应类型: {type(videos_response)}, 值: {videos_response}")
@@ -1393,13 +1396,22 @@ class YouTubeMonitor:
             if self.youtube is None:
                 logger.error(f"频道 {channel_id} YouTube API 对象为 None")
                 return []
-            videos_request = self.youtube.videos().list(
-                part='id,snippet,statistics,contentDetails,liveStreamingDetails',
-                id=','.join(video_ids)
-            )
-            videos_response = self._execute_with_retry(videos_request, f'videos.list (channel {channel_id})')
-            
-            videos = videos_response['items']
+            # YouTube Data API videos.list 单次 id 参数最多 50 个，历史搬运可收集数百个
+            # 候选，必须分批调用避免 "invalid filter parameter"(HTTP 400)。
+            API_MAX_IDS_PER_REQUEST = 50
+            all_videos = []
+            for i in range(0, len(video_ids), API_MAX_IDS_PER_REQUEST):
+                batch_ids = video_ids[i:i + API_MAX_IDS_PER_REQUEST]
+                videos_request = self.youtube.videos().list(
+                    part='id,snippet,statistics,contentDetails,liveStreamingDetails',
+                    id=','.join(batch_ids)
+                )
+                videos_response = self._execute_with_retry(
+                    videos_request, f'videos.list (channel {channel_id}, batch {i // API_MAX_IDS_PER_REQUEST + 1})'
+                )
+                all_videos.extend(videos_response['items'])
+
+            videos = all_videos
             
             # 历史搬运模式需要按时间正序排列（从最老到最新）
             channel_mode = config.get('channel_mode', 'latest')
