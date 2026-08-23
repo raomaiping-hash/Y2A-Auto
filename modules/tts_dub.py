@@ -439,18 +439,22 @@ def ensure_reference_model(
     except Exception:
         cache = {}
 
-    resp = requests.post(
-        f'{base_url.rstrip("/")}/model',
-        headers={'Authorization': f'Bearer {api_key}'},
-        data={
-            'type': 'tts',
-            'title': f'{title} {time.strftime("%m%d%H%M")}',
-            'train_mode': 'fast',
-            'visibility': 'private',
-        },
-        files={'voices': ('reference.mp3', sample_bytes, 'audio/mpeg')},
-        timeout=120,
-    )
+    try:
+        resp = requests.post(
+            f'{base_url.rstrip("/")}/model',
+            headers={'Authorization': f'Bearer {api_key}'},
+            data={
+                'type': 'tts',
+                'title': f'{title} {time.strftime("%m%d%H%M")}',
+                'train_mode': 'fast',
+                'visibility': 'private',
+            },
+            files={'voices': ('reference.mp3', sample_bytes, 'audio/mpeg')},
+            timeout=120,
+        )
+    except Exception as exc:  # 网络/SSL 异常直接降级默认音色，不中止配音
+        logger.warning('克隆声音模型请求失败，使用默认音色: %s', type(exc).__name__)
+        return None
     if resp.status_code != 201:
         logger.warning('创建克隆声音模型失败 HTTP %s: %s', resp.status_code, resp.text[:160])
         return None
@@ -597,7 +601,11 @@ def build_dubbed_audio(
             except Exception as exc:
                 logger.warning('参考采样截取失败: %s', exc)
             if sample_path and os.path.isfile(sample_path):
-                reference_id = ensure_reference_model(api_key, base_url, sample_path, logger)
+                try:
+                    reference_id = ensure_reference_model(api_key, base_url, sample_path, logger)
+                except Exception as exc:
+                    logger.warning('克隆参考音色失败，使用默认音色: %s', type(exc).__name__)
+                    reference_id = None
                 if reference_id:
                     logger.info('参考音色：克隆模型已就绪 %s', reference_id)
             if not reference_id:
