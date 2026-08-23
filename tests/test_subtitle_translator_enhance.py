@@ -176,6 +176,15 @@ class SplitLongCueTests(unittest.TestCase):
         segs = SubtitleWriter._split_long_cue('减少干扰其他航空公司试过彻底取消指定座位来加快速度', 22)
         self.assertEqual(segs, ['减少干扰其他航空公司试过彻底取消指定座位来加快速度'])
 
+    def test_way_overlong_no_conjunction_splits_at_pause(self):
+        from modules.subtitle_translator import SubtitleWriter
+        # 极长句（远超阈值 22*1.2）即使无连接词/标点，也在停顿助词处兜底拆开，避免一屏溢出
+        segs = SubtitleWriter._split_long_cue(
+            '在这视野毫无遮挡的高塔上卡珊德拉目睹了一切的发展度过了漫长而痛苦的10年在那些痛苦的岁月里', 22)
+        self.assertGreater(len(segs), 1)
+        self.assertTrue(all(len(s) <= 22 for s in segs))
+        self.assertEqual(''.join(segs), '在这视野毫无遮挡的高塔上卡珊德拉目睹了一切的发展度过了漫长而痛苦的10年在那些痛苦的岁月里')
+
     def test_tiny_fragment_dropped(self):
         from modules.subtitle_translator import SubtitleWriter
         # 过短残句丢弃；无换行无连接词超长句整句保留

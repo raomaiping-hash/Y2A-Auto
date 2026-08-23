@@ -374,38 +374,81 @@ class SubtitleWriter:
 
     @staticmethod
     def _split_by_conjunction(text: str, max_chars: int = 22) -> List[str]:
-        """在中文连接词前兜底断句（仅在按换行拆分后仍超长时使用）。
+        """在中文语义断点处兜底断句（超长句无连接词时仍可拆分）。
 
-        只在连接词处切分，绝不从词中间切断；若无连接词可拆则整体保留
-        （宁可略超长，也不生硬切断词语）。
+        切点优先级：
+        1. 连接词（_CONJUNCTIONS）
+        2. 中文标点（，。！？；、）之后
+        3. 常见停顿/助词位置（了/在/着/地/过/而/于/把/被/，等）
+        绝不在词中间硬切（宁可略超长）；无任何可拆点时整体保留。
+
+        仅在文本超过 max_chars*1.2 时才启动"停顿词兜底拆分"，避免对轻微超长
+        （如 26 字 vs 22）的生硬切词；超过该阈值说明确实一屏放不下，需拆开。
         """
         if len(text) <= max_chars:
             return [text]
-        positions = []
+        split_threshold = max_chars * 1.2
+
+        # 收集所有可行切点（字符下标，指向切点之后的位置）
+        # priority：连接词/标点（语义明确，优先）；fallback：停顿助词（仅超长时启用）
+        priority_positions = set()
+        fallback_positions = set()
+        # 1) 连接词
         for conj in SubtitleWriter._CONJUNCTIONS:
             start = 0
             while True:
                 idx = str(text).find(conj, start)
                 if idx == -1:
                     break
-                positions.append(idx)
+                priority_positions.add(idx)
                 start = idx + len(conj)
-        positions = sorted(set(positions))
-        if not positions:
+        # 2) 中文标点之后（下标 = 标点下标 + 1）
+        for punct in '，。！？；、：':
+            start = 0
+            while True:
+                idx = str(text).find(punct, start)
+                if idx == -1:
+                    break
+                priority_positions.add(idx + len(punct))
+                start = idx + len(punct)
+        # 3) 常见停顿/助词：仅当文本明显超长（>阈值）才启用，避免轻微超长时生硬断词
+        if len(text) > split_threshold:
+            for pause in ('了', '在', '着', '地', '过', '而', '于', '把', '被', '呢', '吧'):
+                start = 0
+                while True:
+                    idx = str(text).find(pause, start)
+                    if idx == -1:
+                        break
+                    fallback_positions.add(idx + len(pause))
+                    start = idx + len(pause)
+
+        priority_positions = sorted(p for p in priority_positions if 0 < p < len(text))
+        fallback_positions = sorted(p for p in fallback_positions if 0 < p < len(text))
+
+        if not priority_positions and not fallback_positions:
             return [text]
+
+        def _pick_cut(limit: int) -> int:
+            """在 limit 内找最靠后的切点：优先语义明确位（连接词/标点），否则停顿助词。"""
+            for pos in reversed(priority_positions):
+                if pos <= limit:
+                    return pos
+            for pos in reversed(fallback_positions):
+                if pos <= limit:
+                    return pos
+            return -1
+
         segs = []
         remain = text
         while len(remain) > max_chars:
-            # 在 max_chars 范围内找最靠后的连接词位置作为切点
-            cut = -1
-            for pos in sorted(positions, reverse=True):
-                if pos <= max_chars:
-                    cut = pos
-                    break
+            cut = _pick_cut(max_chars)
             if cut <= 0:
                 break
             segs.append(remain[:cut].strip())
             remain = remain[cut:].strip()
+            # 更新切点坐标到新的 remain
+            priority_positions = [p - cut for p in priority_positions if p - cut > 0]
+            fallback_positions = [p - cut for p in fallback_positions if p - cut > 0]
         if remain:
             segs.append(remain.strip())
         return [s for s in segs if s]
