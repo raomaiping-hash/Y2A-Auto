@@ -32,7 +32,13 @@ def _register_clients():
         # 使用 Chrome 131 浏览器指纹伪装：空 impersonate 会暴露脚本 TLS 指纹，
         # 导致 B 站风控在 preupload 阶段直接返回 406。chrome131 实测对
         # api.bilibili.com 返回 200（与上传器 User-Agent Chrome/131 一致）。
-        register_client("curl_cffi", CurlCFFIClient, {"impersonate": "chrome131", "http2": True})
+        # 同时注册 trust_env 配置项，使 get_client() 能从 request_settings 读取，
+        # 用于“本机直连上传”（trust_env=False 时忽略环境代理）。
+        register_client(
+            "curl_cffi",
+            CurlCFFIClient,
+            {"impersonate": "chrome131", "http2": True, "trust_env": True},
+        )
         select_client("curl_cffi")
     except Exception as exc:
         logger.warning("注册 Bilibili curl_cffi 客户端失败: %s", exc)

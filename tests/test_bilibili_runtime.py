@@ -1,6 +1,7 @@
 import ast
 import importlib
 import json
+import os
 import pathlib
 import re
 import sys
@@ -33,8 +34,27 @@ class BilibiliRuntimeTests(unittest.TestCase):
             self.assertTrue(runtime.configure_bilibili_runtime())
             self.assertTrue(runtime.configure_bilibili_runtime())
 
-        self.assertEqual(calls, [("impersonate", "chrome131")])
+        # 默认启用本机直连：设置 impersonate 与 trust_env
+        self.assertIn(("impersonate", "chrome131"), calls)
+        self.assertIn(("trust_env", False), calls)
         self.assertIsNone(runtime.get_bilibili_runtime_error())
+
+    def test_configure_runtime_direct_connect_disabled(self):
+        import modules.bilibili_runtime as runtime
+
+        runtime = importlib.reload(runtime)
+        calls = []
+        fake_settings = types.SimpleNamespace(set=lambda key, value: calls.append((key, value)))
+        fake_bili_sdk = types.SimpleNamespace(request_settings=fake_settings)
+
+        with mock.patch.dict(sys.modules, {"modules.bili_sdk": fake_bili_sdk}), mock.patch.dict(
+            os.environ, {"BILIBILI_DIRECT_CONNECT": "0"}
+        ):
+            self.assertTrue(runtime.configure_bilibili_runtime())
+
+        # 关闭直连：不应设置 trust_env=False（保留默认走代理）
+        self.assertNotIn(("trust_env", False), calls)
+        self.assertIn(("impersonate", "chrome131"), calls)
 
     def test_zone_wrapper_returns_sdk_data(self):
         import modules.bilibili_zones as zones
