@@ -357,7 +357,12 @@ def assemble_dubbed_video(
         cmd += ['-vaapi_device', '/dev/dri/renderD128']
     cmd += ['-filter_complex', ';'.join(audio_filters)]
     if vf:
+        # VAAPI 编码必须上传到硬件 surface；无字幕时也要转换格式
+        if use_vaapi:
+            vf = f'{vf},format=nv12,hwupload'
         cmd += ['-vf', vf]
+    elif use_vaapi:
+        cmd += ['-vf', 'format=nv12,hwupload']
     # 视频编码
     if use_vaapi:
         cmd += ['-c:v', 'hevc_vaapi', '-qp', str(int(config.get('VAAPI_QP') or 26)),

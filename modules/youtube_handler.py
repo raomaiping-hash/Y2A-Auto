@@ -833,16 +833,22 @@ def download_video_data(youtube_url, task_id=None, cookies_file_path=None, skip_
             cmd.extend([
                 '--no-write-info-json',
                 '--no-write-thumbnail',
-                # 不下载任何字幕（含自动字幕）：字幕统一由 ASR 语音识别生成，
-                # 避免 YouTube 自动字幕的滚动窗口重复问题
-                '--no-write-subs',
+                # 下载官方字幕（含自动字幕）：有字幕的视频直接翻译/烧录，ASR 仅作兜底。
+                # 仅取英文原文 + 简体中文（精确码，避免 en.* 匹配到全部英文翻译版本）
+                '--write-subs',
+                '--write-auto-subs',
+                '--sub-langs', 'en,zh-Hans,zh-CN,zh',
+                '--sub-format', 'srt/best',
             ])
         else:
             # 默认全下载
             cmd.extend([
                 '--write-info-json',
                 '--write-thumbnail',
-                '--no-write-subs',
+                '--write-subs',
+                '--write-auto-subs',
+                '--sub-langs', 'en,zh-Hans,zh-CN,zh',
+                '--sub-format', 'srt/best',
             ])
 
         # 传入 ffmpeg 位置（若检测到本地路径；在 Docker 中让 yt-dlp 走 PATH）

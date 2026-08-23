@@ -19,20 +19,21 @@ def _load_function(name):
 
 
 class YouTubeSubtitleDownloadOptionsTests(unittest.TestCase):
-    def test_download_command_always_disables_subtitle_download(self):
-        """自动字幕已彻底移除：下载命令恒为 --no-write-subs，字幕统一走 ASR。
+    def test_download_command_enables_subtitle_download(self):
+        """字幕来源策略：下载官方/自动字幕（en/zh），ASR 仅作无字幕视频的兜底。
 
-        源码级回归测试：防止 --write-auto-subs / --write-subs 逻辑被重新引入。
+        源码级回归测试：确保下载命令带 --write-subs / --write-auto-subs 且仅限
+        英/中语言，防止退回到旧策略（--no-write-subs 依赖 ASR 单一路径）。
+        背景：ASR 供应商故障时流水线无字幕可用；且 _clean_subtitle_files 已能
+        合并 YouTube 自动字幕的渐进式重复，旧顾虑已不成立。
         """
         module_path = pathlib.Path(__file__).resolve().parents[1] / "modules" / "youtube_handler.py"
         source = module_path.read_text(encoding="utf-8")
 
-        self.assertIn("--no-write-subs", source)
-        self.assertNotIn("--write-auto-subs", source)
-        self.assertNotIn("--write-subs", source)
-        self.assertNotIn("YOUTUBE_AUTO_GENERATED_SUBTITLES_ENABLED", source)
-        self.assertNotIn("_build_subtitle_download_args", source)
-        self.assertNotIn("_require_ffmpeg_for_subtitles", source)
+        self.assertNotIn("--no-write-subs", source)
+        self.assertIn("--write-subs", source)
+        self.assertIn("--write-auto-subs", source)
+        self.assertIn("'--sub-langs', 'en,zh-Hans,zh-CN,zh'", source)
 
     def test_config_no_longer_exposes_auto_generated_toggle(self):
         """配置中心不再有自动字幕开关；旧配置键由 prune 自动清理。"""
