@@ -167,6 +167,17 @@ DEFAULT_CONFIG = {
     # 双语字幕输出顺序：src_trans=英文在上/中文在下，trans_src=中文在上/英文在下
     "SUBTITLE_OUTPUT_LANGS": "trans_src",  # 中英双语字幕行序（VideoLingo 风格）
     "SUBTITLE_MAX_LENGTH": 22,  # 单条字幕最大字数（超过则切分成多条，Netflix 单行标准）
+    "SUBTITLE_MODE": "bilingual",  # zh_only=只中文 / bilingual=中英双语(中文大英文小) / en_only=只英文
+    "SUBTITLE_ZH_SIZE": 60,  # 中文字号（参考 VideoLingo transform 大）
+    "SUBTITLE_EN_SIZE": 32,  # 英文字号（比中文小，实现"中文大英文小"）
+    "SUBTITLE_ZH_COLOR": "#FFFFFF",  # 中文字幕颜色
+    "SUBTITLE_EN_COLOR": "#DCDCDC",  # 英文字幕颜色
+    "SUBTITLE_OUTLINE_COLOR": "#000000",  # 字幕描边颜色
+    "SUBTITLE_OUTLINE_WIDTH": 3,  # 描边宽度
+    "SUBTITLE_SHADOW": 0,  # 阴影
+    "SUBTITLE_ALIGN": "bottom",  # bottom / center / top
+    "SUBTITLE_MARGIN_V": 90,  # 中文字幕距底边距离（英文自动在其下方）
+    "SUBTITLE_BOXED": True,  # 是否加半透明背景框（BorderStyle=4）
     # Whisper/OpenAI 兼容配置（可单独配置，未设置则回退到 OPENAI_*）
     "WHISPER_API_KEY": "",
     "WHISPER_BASE_URL": "",

@@ -26,6 +26,124 @@ def _fmt_ts(seconds: float) -> str:
     return f'{h:02d}:{m:02d}:{s:02d},{ms:03d}'
 
 
+def _seconds_to_ass(seconds: float) -> str:
+    """秒 → ASS 时间戳 H:MM:SS.cc（libass 兼容）。"""
+    if seconds < 0:
+        seconds = 0.0
+    cs = int(round(seconds * 100))
+    h, rem = divmod(cs, 360000)
+    m, rem = divmod(rem, 6000)
+    s, cs = divmod(rem, 100)
+    return f'{h}:{m:02d}:{s:02d}.{cs:02d}'
+
+
+def _hex_to_ass(hex_color: Any, default: int = 0xFFFFFF) -> str:
+    """#RRGGBB → ASS 颜色 &HAABBGGRR（A=00 不透明）。"""
+    h = str(hex_color or '').strip().lstrip('#')
+    if len(h) == 6:
+        try:
+            r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        except ValueError:
+            r = g = b = default
+    else:
+        r = g = b = default
+    return f'&H00{b:02X}{g:02X}{r:02X}'
+
+
+def build_bilingual_ass(
+    source_path: str,
+    translated_path: str,
+    out_ass: str,
+    cfg: Optional[Dict[str, Any]] = None,
+    font_family: str = 'Noto Sans CJK SC',
+    video_width: int = 1920,
+    video_height: int = 1080,
+) -> Optional[str]:
+    """生成带样式的双语 ASS（参考 VideoLingo：中文字幕大、英文字幕小）。
+
+    mode: zh_only=只中文 / bilingual=中英双语（中文大英文小） / en_only=只英文。
+    样式与位置由 cfg 控制（字号/颜色/描边/位置/背景框）。
+    返回输出路径；无有效内容返回 None。
+    """
+    cfg = cfg or {}
+    mode = str(cfg.get('SUBTITLE_MODE') or 'bilingual').strip().lower()
+    zh_size = int(cfg.get('SUBTITLE_ZH_SIZE') or 60)
+    en_size = int(cfg.get('SUBTITLE_EN_SIZE') or 32)
+    zh_color = _hex_to_ass(cfg.get('SUBTITLE_ZH_COLOR') or '#FFFFFF')
+    en_color = _hex_to_ass(cfg.get('SUBTITLE_EN_COLOR') or '#DCDCDC')
+    outline_color = _hex_to_ass(cfg.get('SUBTITLE_OUTLINE_COLOR') or '#000000')
+    outline = int(cfg.get('SUBTITLE_OUTLINE_WIDTH') or 3)
+    shadow = int(cfg.get('SUBTITLE_SHADOW') or 0)
+    boxed = bool(cfg.get('SUBTITLE_BOXED', True))
+    border_style = 4 if boxed else 1
+    back_color = _hex_to_ass(cfg.get('SUBTITLE_BOX_COLOR') or '#000000')
+    # 半透明背景框：&HxxBBGGRR，xx=alpha。默认 &H88000000≈53% 黑
+    if boxed:
+        back_color = '&H' + hex(int(cfg.get('SUBTITLE_BOX_ALPHA') or 0x88))[2:].zfill(2) + back_color[4:]
+    align_map = {'bottom': 2, 'center': 5, 'top': 8}
+    align = align_map.get(str(cfg.get('SUBTITLE_ALIGN') or 'bottom').strip().lower(), 2)
+    margin_v = int(cfg.get('SUBTITLE_MARGIN_V') or 90)
+    en_margin = max(8, margin_v - int(zh_size * 0.85))
+
+    src_cues = _parse_srt(source_path)
+    tr_cues = _parse_srt(translated_path)
+    if not tr_cues:
+        return None
+
+    header = (
+        '[Script Info]\n'
+        'Title: Bilingual Subtitle\n'
+        'ScriptType: v4.00+\n'
+        f'PlayResX: {int(video_width)}\n'
+        f'PlayResY: {int(video_height)}\n'
+        'WrapStyle: 0\n'
+        'ScaledBorderAndShadow: yes\n'
+        'Collisions: Normal\n\n'
+        '[V4+ Styles]\n'
+        'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, '
+        'Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, '
+        'Alignment, MarginL, MarginR, MarginV, Encoding\n'
+        f'Style: Zh,{font_family},{zh_size},{zh_color},{zh_color},{outline_color},{back_color},'
+        '0,0,0,0,100,100,0,0,' + f'{border_style},{outline},{shadow},{align},60,60,{margin_v},1\n'
+        f'Style: En,{font_family},{en_size},{en_color},{en_color},{outline_color},{back_color},'
+        '0,0,0,0,100,100,0,0,' + f'{border_style},{outline},{shadow},{align},60,60,{en_margin},1\n\n'
+        '[Events]\n'
+        'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n'
+    )
+
+    lines: List[str] = []
+    if mode == 'en_only':
+        for tc in tr_cues:
+            sc = _find_source_for(src_cues, tc['start'], tc['end'])
+            en = _slice_source_text(sc['text'], sc['start'], sc['end'], tc['start'], tc['end']) if sc else ''
+            if en:
+                lines.append(f"Dialogue: 0,{_seconds_to_ass(tc['start'])},{_seconds_to_ass(tc['end'])},"
+                             f"En,,0,0,0,,{{\\rEn}}{en}")
+    elif mode == 'zh_only':
+        for tc in tr_cues:
+            if tc['text']:
+                lines.append(f"Dialogue: 0,{_seconds_to_ass(tc['start'])},{_seconds_to_ass(tc['end'])},"
+                             f"Zh,,0,0,0,,{{\\rZh}}{tc['text']}")
+    else:  # bilingual
+        for tc in tr_cues:
+            sc = _find_source_for(src_cues, tc['start'], tc['end'])
+            en = _slice_source_text(sc['text'], sc['start'], sc['end'], tc['start'], tc['end']) if sc else ''
+            st, en_ts = _seconds_to_ass(tc['start']), _seconds_to_ass(tc['end'])
+            # 中文大行在上
+            if tc['text']:
+                lines.append(f"Dialogue: 0,{st},{en_ts},Zh,,0,0,0,,{{\\rZh}}{tc['text']}")
+            # 英文小行在下
+            if en:
+                lines.append(f"Dialogue: 0,{st},{en_ts},En,,0,0,0,,{{\\rEn}}{en}")
+
+    if not lines:
+        return None
+    os.makedirs(os.path.dirname(out_ass), exist_ok=True)
+    with open(out_ass, 'w', encoding='utf-8') as fh:
+        fh.write(header + '\n'.join(lines) + '\n')
+    return out_ass
+
+
 def _parse_srt(path: str) -> List[Dict[str, Any]]:
     if not path or not os.path.isfile(path):
         return []

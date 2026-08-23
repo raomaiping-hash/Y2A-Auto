@@ -3515,20 +3515,43 @@ class TaskProcessor:
                 
                 # 如果配置了将字幕嵌入视频
                 if should_embed_subtitle:
-                    # 生成中英双语字幕（参考 VideoLingo src_trans/trans_src），烧录双字幕
-                    from modules.bilingual_subtitles import build_bilingual_srt
-                    bilingual_path = os.path.join(task_dir, f"bilingual_{task_id}.srt")
-                    order = str(self.config.get('SUBTITLE_OUTPUT_LANGS') or 'trans_src')
+                    # 生成带样式的双语字幕 ASS（参考 VideoLingo：中文大、英文小），烧录
+                    from modules.bilingual_subtitles import build_bilingual_ass, build_bilingual_srt
+                    burn_path: Optional[str] = None
                     try:
-                        bilingual_path = build_bilingual_srt(
-                            subtitle_file, translated_subtitle_path, bilingual_path,
-                            order=order,
-                            source_is_zh=(str(subtitle_lang).lower() == 'zh'),
-                        ) or translated_subtitle_path
+                        # 视频分辨率用于 ASS PlayRes
+                        stream = self._get_video_stream_info(task['video_path_local'], task_logger)
+                        vw = int(stream.get('width') or 1920)
+                        vh = int(stream.get('height') or 1080)
+                        ass_path = os.path.join(task_dir, f"bilingual_{task_id}.ass")
+                        source_is_zh = (str(subtitle_lang).lower() == 'zh')
+                        ass_path = build_bilingual_ass(
+                            subtitle_file, translated_subtitle_path, ass_path,
+                            cfg=self.config,
+                            font_family='Noto Sans CJK SC',
+                            video_width=vw,
+                            video_height=vh,
+                        )
+                        if ass_path and os.path.isfile(ass_path):
+                            burn_path = ass_path
+                        else:
+                            task_logger.warning("生成双语 ASS 失败，退化为单语翻译字幕")
                     except Exception as exc:
-                        task_logger.warning("生成双语字幕失败，退化为单语翻译字幕: %s", str(exc)[:160])
-                        bilingual_path = translated_subtitle_path
-                    burned_sub = bilingual_path if os.path.isfile(bilingual_path) else translated_subtitle_path
+                        task_logger.warning("生成双语 ASS 失败，退化为单语翻译字幕: %s", str(exc)[:160])
+                    if burn_path is None:
+                        # 退化：仍生成双语 srt 供查阅，否则用翻译字幕
+                        srt_path = os.path.join(task_dir, f"bilingual_{task_id}.srt")
+                        order = str(self.config.get('SUBTITLE_OUTPUT_LANGS') or 'trans_src')
+                        try:
+                            burn_path = build_bilingual_srt(
+                                subtitle_file, translated_subtitle_path, srt_path,
+                                order=order,
+                                source_is_zh=(str(subtitle_lang).lower() == 'zh'),
+                            ) or translated_subtitle_path
+                        except Exception as exc:
+                            task_logger.warning("生成双语 SRT 失败，用翻译字幕: %s", str(exc)[:160])
+                            burn_path = translated_subtitle_path
+                    burned_sub = burn_path if os.path.isfile(str(burn_path)) else translated_subtitle_path
                     embedded_video_path = self._embed_subtitle_in_video(
                         task_id, task['video_path_local'],
                         burned_sub, task_logger

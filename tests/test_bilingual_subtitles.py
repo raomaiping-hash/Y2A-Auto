@@ -78,6 +78,47 @@ class BilingualSubtitleTests(unittest.TestCase):
         self.assertLess(len(sliced.split()), len(text.split()))
         self.assertGreater(len(sliced.split()), 0)
 
+    def test_build_bilingual_ass_styles(self):
+        """中文大(60)+英文小(32)，两个样式；双语生成两行，zh_only 只中文。"""
+        import tempfile
+        from modules.bilingual_subtitles import build_bilingual_ass
+        from modules.srt_transform_engine import SrtTransformConfig, SrtTransformEngine
+        eng = SrtTransformEngine(SrtTransformConfig())
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, 'src.srt')
+            tr = os.path.join(tmp, 'tr.srt')
+            out = os.path.join(tmp, 'out.ass')
+            _write_srt(src, [(0.0, 5.0, 'After hours of delay your flight is boarding')])
+            _write_srt(tr, [(0.0, 5.0, '经过数小时延误后你的航班开始登机')])
+            cfg = {
+                'SUBTITLE_MODE': 'bilingual',
+                'SUBTITLE_ZH_SIZE': 60,
+                'SUBTITLE_EN_SIZE': 32,
+                'SUBTITLE_ZH_COLOR': '#FFFFFF',
+                'SUBTITLE_EN_COLOR': '#DCDCDC',
+                'SUBTITLE_ALIGN': 'bottom',
+                'SUBTITLE_MARGIN_V': 90,
+                'SUBTITLE_BOXED': True,
+            }
+            res = build_bilingual_ass(src, tr, out, cfg, 'Noto Sans CJK SC', 1920, 1080)
+            self.assertTrue(res)
+            with open(out, encoding='utf-8') as fh:
+                content = fh.read()
+            # 两个样式 Zh/En，中文字号比英文大
+            self.assertIn('Style: Zh,Noto Sans CJK SC,60', content)
+            self.assertIn('Style: En,Noto Sans CJK SC,32', content)
+            # 双语有两行（一条 Zh + 一条 En dialogue）
+            self.assertIn('{\\rZh}经过', content)
+            self.assertIn('{\\rEn}After hours of delay', content)
+
+            # zh_only 只保留中文行
+            res2 = build_bilingual_ass(src, tr, os.path.join(tmp, 'out2.ass'), {**cfg, 'SUBTITLE_MODE': 'zh_only'}, 'Noto Sans CJK SC', 1920, 1080)
+            self.assertTrue(res2)
+            with open(os.path.join(tmp, 'out2.ass'), encoding='utf-8') as fh:
+                content2 = fh.read()
+            self.assertIn('{\\rZh}经过', content2)
+            self.assertNotIn('{\\rEn}', content2)
+
 
 if __name__ == '__main__':
     unittest.main()
