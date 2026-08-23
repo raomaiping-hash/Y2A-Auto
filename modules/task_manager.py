@@ -572,7 +572,9 @@ def _get_effective_metadata_limits(upload_target):
     if target == UPLOAD_TARGET_BILIBILI:
         return {
             'title_limit': 80,
-            'description_limit': 2000,
+            # B 站投稿接口简介实际限制为 1000 字，且换行/格式符占用计数；
+            # 实测 2000/1500 字均触发 21010（简介字数过长）。用保守值 800 防边界。
+            'description_limit': 800,
         }
     return {
         'title_limit': 50,

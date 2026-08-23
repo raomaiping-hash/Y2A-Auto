@@ -18,7 +18,9 @@ from .bilibili_auth import load_credential_from_file, validate_credential_remote
 from .utils import get_app_subdir
 
 BILIBILI_TITLE_LIMIT = 80
-BILIBILI_DESCRIPTION_LIMIT = 2000
+# B 站投稿接口对简介实际限制：创作中心为 1000 字，且换行/格式符会占用计数。
+# 实测 2000、1500 字均触发 21010（简介字数过长）。用保守值 800 确保长简介不被卡边界。
+BILIBILI_DESCRIPTION_LIMIT = 800
 
 
 def setup_task_logger(task_id):

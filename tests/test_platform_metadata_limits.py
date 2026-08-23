@@ -108,10 +108,12 @@ class PlatformMetadataLimitTests(unittest.TestCase):
         ns = _load_bilibili_helpers()
 
         self.assertEqual(ns["BILIBILI_TITLE_LIMIT"], 80)
-        self.assertEqual(ns["BILIBILI_DESCRIPTION_LIMIT"], 2000)
+        # B 站投稿接口对简介实际限制：创作中心为 1000 字；实测 2000/1500 字均触发
+        # 21010（简介字数过长）。代码用保守值 800，确保长简介不被卡边界。
+        self.assertEqual(ns["BILIBILI_DESCRIPTION_LIMIT"], 800)
 
         result = ns["format_bilibili_description"]("b" * 2300)
-        self.assertEqual(len(result), 2000)
+        self.assertEqual(len(result), 800)
         self.assertTrue(result.endswith("..."))
 
         shared_result = ns["format_bilibili_description"]("c" * 1300, max_len=1000)
@@ -141,7 +143,7 @@ class PlatformMetadataLimitTests(unittest.TestCase):
         )
         self.assertEqual(
             get_effective_metadata_limits("bilibili"),
-            {"title_limit": 80, "description_limit": 2000},
+            {"title_limit": 80, "description_limit": 800},
         )
 
 
