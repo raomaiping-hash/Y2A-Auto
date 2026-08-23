@@ -519,6 +519,104 @@ def ensure_reference_model(
 
 # ---------------------------------------------------------------- 主流程
 
+# ---------------------------------------------------------------- 新管线：整段文案 + STT 反推时间戳
+# ---------------------------------------------------------------
+
+def _rewrite_script(texts: List[str], config: Dict[str, Any], logger: logging.Logger) -> Optional[str]:
+    """用 LLM 把逐条字幕重写为一段通顺、连贯的中文旁白（整段，非逐句碎片）。"""
+    import openai
+    api_key = str(config.get('OPENAI_API_KEY') or '').strip()
+    base_url = str(config.get('OPENAI_BASE_URL') or 'https://api.openai.com/v1').strip()
+    model = str(config.get('OPENAI_MODEL_NAME') or 'gpt-3.5-turbo').strip()
+    if not api_key:
+        logger.warning('重写文案缺少 OPENAI_API_KEY')
+        return None
+    src = '\n'.join(f'{i + 1}. {t}' for i, t in enumerate(texts) if str(t or '').strip())
+    if not src:
+        return None
+    client = openai.OpenAI(api_key=api_key, base_url=base_url)
+    sysp = (
+        "你是专业视频文案润色。把下面逐条字幕重写为一段通顺、连贯、口语化的中文旁白，"
+        "保持原意和顺序，消除逐条的机械感。用句号标句（每句末尾用句号），句与句之间自然停顿，"
+        "可适当合并重复语义、连缀成自然语流。只输出润色后的整段旁白文本，不要编号、不要解释、不要JSON。"
+    )
+    try:
+        r = client.chat.completions.create(
+            model=model,
+            messages=[{'role': 'system', 'content': sysp}, {'role': 'user', 'content': src}],
+            max_tokens=4096,
+        )
+        script = (r.choices[0].message.content or '').strip()
+        if script:
+            logger.info('重写整段文案 %d 字', len(script))
+        return script or None
+    except Exception as exc:
+        logger.warning('重写整段文案失败: %s', str(exc)[:160])
+        return None
+
+
+def _transcribe_segments(audio_wav: str, config: Dict[str, Any], logger: logging.Logger, out_dir: str) -> List[Dict[str, Any]]:
+    """用项目 grok-stt + VAD 把合成语音反推为带时间戳的段落（语音自身时间轴）。"""
+    try:
+        from .speech_recognition import create_speech_recognizer_from_config
+        rec = create_speech_recognizer_from_config(config, 'dub')
+        if rec is None:
+            logger.warning('无法创建语音识别器，STT 反推失败')
+            return []
+        out_srt = os.path.join(out_dir, 'asr_reverse.srt')
+        res = rec.transcribe_video_to_subtitles(audio_wav, out_srt)
+        if not res or not os.path.isfile(out_srt):
+            logger.warning('STT 反推未产出字幕')
+            return []
+        from .srt_transform_engine import SrtTransformConfig, SrtTransformEngine
+        eng = SrtTransformEngine(SrtTransformConfig(), logger=logger)
+        cues = eng.parse_srt(open(out_srt, encoding='utf-8', errors='replace').read())
+        segs = [
+            {'start': float(c['start']), 'end': float(c['end']), 'text': str(c.get('text') or '').strip()}
+            for c in cues if str(c.get('text') or '').strip()
+        ]
+        logger.info('STT 反推段落 %d 个', len(segs))
+        return segs
+    except Exception as exc:
+        logger.warning('STT 反推失败: %s', str(exc)[:160])
+        return []
+
+
+def _map_segments_to_video(
+    segs: List[Dict[str, Any]],
+    script_dur: float,
+    original_cues: List[Dict[str, Any]],
+    total_duration: float,
+    logger: logging.Logger,
+) -> List[Dict[str, Any]]:
+    """把语音段按"段在语音中的相对位置"线性映射到"视频说话时间轴"（比例位置，不拉伸音频）。"""
+    if not segs or script_dur <= 0:
+        return []
+    # 视频说话范围 = 源 ASR 首句start ~ 末句end
+    sp = [float(c['start']) for c in original_cues if str(c.get('text') or '').strip()]
+    ep = [float(c['end']) for c in original_cues if str(c.get('text') or '').strip()]
+    if sp and ep:
+        v0, v1 = min(sp), max(ep)
+    else:
+        v0, v1 = 0.0, float(total_duration)
+    if v1 - v0 <= 0:
+        v1 = v0 + 1.0
+    out: List[Dict[str, Any]] = []
+    for seg in segs:
+        t0, t1 = float(seg['start']), float(seg['end'])
+        m0 = v0 + (t0 / script_dur) * (v1 - v0)
+        m1 = v0 + (t1 / script_dur) * (v1 - v0)
+        if m1 - m0 < _MIN_CUE_DURATION_S:
+            m1 = m0 + _MIN_CUE_DURATION_S
+        out.append({
+            'src_start': t0, 'src_end': t1,
+            'video_start': m0, 'video_end': m1,
+            'text': seg.get('text', ''),
+        })
+    logger.info('语音段映射到视频时间轴: %d 段 (范围 %.1f-%.1fs)', len(out), v0, v1)
+    return out
+
+
 def build_dubbed_audio(
     task_dir: str,
     video_path: str,
@@ -661,7 +759,7 @@ def build_dubbed_audio(
         else:
             logger.info('参考音色：默认音色')
 
-        # 4. 逐 cue 合成 + 拟合 + 定位（并发：合成是网络 IO，单条串行往返是最大瓶颈）
+        # 4. 新管线：LLM 重写整段文案 → 一次合成 → STT 反推时间戳 → 映射视频时间轴
         client = FishAudioTtsClient(
             api_key=api_key,
             base_url=str(config.get('TTS_DUB_BASE_URL') or DEFAULT_BASE_URL),
@@ -671,72 +769,49 @@ def build_dubbed_audio(
             logger=logger,
         )
         base_speed = float(config.get('TTS_DUB_SPEED') or 1.0)
-        max_workers = int(config.get('TTS_DUB_MAX_WORKERS') or 3)
 
-        # 计算每句"可利用时长"tol_dur = 窗口 + 句间空隙(利用相邻静默扩容，参考 VideoLingo tolerance)
-        _tol = float(config.get('TTS_DUB_TOLERANCE') or 0.6)
-        tol_durs: Dict[int, float] = {}
-        for _i, _c in enumerate(usable_cues, 1):
-            _s = float(_c['start']); _e = float(_c['end'])
-            _w = max(_e - _s, _MIN_CUE_DURATION_S)
-            _nxt = float(usable_cues[_i]['start']) if _i < len(usable_cues) else _e
-            _gap = max(0.0, _nxt - _e)
-            tol_durs[_i] = _w + min(_gap, _tol)
-
-        def _synth_cue(idx: int, cue: Dict[str, Any]):
-            start_s = float(cue['start'])
-            window_s = max(float(cue['end']) - start_s, _MIN_CUE_DURATION_S)
-            text = str(cue.get('text') or '').strip()
-            if not text:
-                return idx, None, None
-            raw = client.synthesize(
-                text,
-                reference_id=reference_id,
-                reference_audio=reference_audio,
-                reference_text=reference_text,
-                speed=base_speed,
-            )
-            raw_path = os.path.join(tmp_dir, f'cue_{idx:04d}_raw.mp3')
-            with open(raw_path, 'wb') as fh:
-                fh.write(raw)
-            tts_duration = probe_duration(raw_path, ffprobe, logger)
-            fit_speed = fit_cue_speed(tts_duration, tol_durs.get(idx, window_s))
-            if fit_speed > 1.0:
-                fitted_path = os.path.join(tmp_dir, f'cue_{idx:04d}_fitted.wav')
-                fit_audio_speed(raw_path, fit_speed, fitted_path, ffmpeg, logger)
-            else:
-                fitted_path = raw_path
-            placed_path = os.path.join(tmp_dir, f'cue_{idx:04d}_placed.wav')
-            place_audio_at(fitted_path, start_s, placed_path, ffmpeg, logger)
-            return idx, placed_path, None
-
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        # 4a. LLM 重写整段通顺文案
+        script = _rewrite_script([str(c.get('text') or '') for c in usable_cues], config, logger)
+        if not script:
+            warnings.append('LLM 重写整段文案失败，保留原音频')
+            return None, warnings
+        # 4b. 一次合成整段语音
+        raw = client.synthesize(
+            script, reference_id=reference_id, reference_audio=reference_audio,
+            reference_text=reference_text, speed=base_speed, audio_format='wav',
+        )
+        script_wav = os.path.join(tmp_dir, 'script.wav')
+        with open(script_wav, 'wb') as fh:
+            fh.write(raw)
+        script_dur = probe_duration(script_wav, ffprobe, logger)
+        logger.info('整段合成完成：%d 字，%.1f 秒', len(script), script_dur)
+        # 4c. STT 反推段落时间戳（语音自身时间轴）
+        segs = _transcribe_segments(script_wav, config, logger, tmp_dir)
+        if not segs:
+            warnings.append('STT 反推无段落，保留原音频')
+            return None, warnings
+        # 4d. 映射到视频时间轴
+        mapped = _map_segments_to_video(segs, script_dur, original_cues, total_duration, logger)
+        # 4e. 逐段切出并定位
         overlays: List[str] = []
-        placed_slots: List[Tuple[int, str]] = []
         placed_count = 0
-        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix='dub') as executor:
-            futures = {
-                executor.submit(_synth_cue, idx, cue): idx
-                for idx, cue in enumerate(usable_cues, 1)
-            }
-            for fut in as_completed(futures):
-                idx, path, err = fut.result()
-                if err:
-                    warnings.append(f'cue #{idx} 合成失败: {str(err)[:120]}')
-                    logger.warning('cue #%d/%d 合成失败: %s', idx, len(usable_cues), err)
-                elif path:
-                    placed_slots.append((idx, path))
-                    placed_count += 1
-        # 按 idx 排序，保证混音顺序稳定（不依赖任务完成时序）
-        placed_slots.sort(key=lambda x: x[0])
-        overlays = [p for _, p in placed_slots]
+        for i, ms in enumerate(mapped, 1):
+            src_len = ms['src_end'] - ms['src_start']
+            if src_len <= 0:
+                continue
+            seg_audio = os.path.join(tmp_dir, f'seg_{i:03d}.wav')
+            cut_audio_range(script_wav, ms['src_start'], src_len, seg_audio, ffmpeg, logger)
+            placed_path = os.path.join(tmp_dir, f'seg_{i:03d}_placed.wav')
+            place_audio_at(seg_audio, ms['video_start'], placed_path, ffmpeg, logger)
+            overlays.append(placed_path)
+            placed_count += 1
 
         if not overlays:
-            warnings.append('全部 cue 合成失败，保留原音频')
+            warnings.append('全部语音段放置失败，保留原音频')
             return None, warnings
 
         # 5. 混合
-        logger.info('混合 %d 条配音轨道（共 %d 条 cue）', placed_count, len(usable_cues))
+        logger.info('混合 %d 段整段旁白（共 %d 段）', placed_count, len(mapped))
         mixed_wav = os.path.join(tmp_dir, 'dubbed.wav')
         mix_tracks(
             base_track, overlays, mixed_wav, ffmpeg, logger,
