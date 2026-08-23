@@ -3612,6 +3612,178 @@ class TaskProcessor:
             )
             return False
 
+    def _resolve_original_video(self, task_id: str, task: dict, task_dir: str) -> str:
+        """定位“未烧录”的原始视频文件，供重新烧录使用。
+
+        优先返回任务目录中的 video.mp4（下载原片）；否则从带字幕的产物名反推；
+        最后回退到 video_path_local（若其本身并非 *_with_subtitle 版本）。
+        """
+        candidates = []
+        # 1) 任务目录中的 video.mp4（下载阶段产物）
+        candidates.append(os.path.join(task_dir, 'video.mp4'))
+        # 2) 从带字幕产物名反推：video_with_subtitle.mp4 -> video.mp4
+        video_path_local = str(task.get('video_path_local') or '').strip()
+        if video_path_local:
+            video_name = os.path.splitext(os.path.basename(video_path_local))[0]
+            if video_name.endswith('_with_subtitle'):
+                candidates.append(os.path.join(task_dir, f"{video_name[:-len('_with_subtitle')]}.mp4"))
+            else:
+                candidates.append(video_path_local)
+        # 3) 扫描任务目录中第一个非带字幕、非临时文件的 mp4
+        try:
+            for name in sorted(os.listdir(task_dir)):
+                if not isinstance(name, str) or not name.lower().endswith('.mp4'):
+                    continue
+                if 'with_subtitle' in name.lower() or name.startswith('.'):
+                    continue
+                candidates.append(os.path.join(task_dir, name))
+                break
+        except Exception:
+            pass
+
+        for candidate in candidates:
+            if candidate and candidate != video_path_local and os.path.isfile(candidate):
+                return candidate
+        # 兜底：仅当 video_path_local 本身不是“带字幕”版本时才直接使用，避免二次叠加烧录
+        if video_path_local and os.path.isfile(video_path_local):
+            vname = os.path.splitext(os.path.basename(video_path_local))[0]
+            if not vname.endswith('_with_subtitle'):
+                return video_path_local
+        return ''
+
+    def _rebuild_burn_subtitle(
+        self, task_id: str, task_dir: str, task: dict,
+        origin_video: str, task_logger,
+    ) -> tuple:
+        """按当前配置重新生成“待烧录”字幕文件（优先双语 ASS，退化单语）。
+
+        返回 (burn_path 或 '' , source_srt 或 '', translated_srt 或 '', subtitle_lang 或 '')。
+        source_srt / translated_srt 为用于更新任务记录的字幕来源。
+        """
+        source_srt = ''
+        translated_srt = ''
+        # 已记录的字幕来源（可能是 .srt），否则遍历任务目录
+        stored_original = str(task.get('subtitle_path_original') or '').strip()
+        stored_translated = str(task.get('subtitle_path_translated') or '').strip()
+
+        def _pick(path_value, is_translated=False):
+            p = str(path_value or '').strip()
+            if p and os.path.isfile(p) and os.path.splitext(p)[1].lower() == '.srt':
+                return p
+            return ''
+
+        source_srt = _pick(stored_original)
+        translated_srt = _pick(stored_translated)
+        if not source_srt or not translated_srt:
+            # 在任务目录中查找 asr_*.srt / translated_*.srt
+            try:
+                for name in sorted(os.listdir(task_dir)):
+                    if not isinstance(name, str) or not name.lower().endswith('.srt'):
+                        continue
+                    full = os.path.join(task_dir, name)
+                    lower = name.lower()
+                    if lower.startswith('translated_'):
+                        if not translated_srt:
+                            translated_srt = full
+                    elif lower.startswith('asr_') or lower.startswith('video.') or 'enhanced' in lower:
+                        if not source_srt:
+                            source_srt = full
+            except Exception:
+                pass
+
+        subtitle_lang = str(task.get('subtitle_language_detected') or '').strip().lower()
+        if not subtitle_lang and source_srt:
+            try:
+                subtitle_lang = self._detect_subtitle_language(source_srt)
+            except Exception:
+                subtitle_lang = ''
+
+        translation_enabled = _as_bool(self.config.get('SUBTITLE_TRANSLATION_ENABLED', False))
+        source_is_zh = subtitle_lang == 'zh'
+
+        # 有英文源 + 翻译 → 重新生成双语 ASS（会应用当前样式配置）
+        if source_srt and translated_srt and not source_is_zh and translation_enabled:
+            try:
+                from modules.bilingual_subtitles import build_bilingual_ass
+                stream = self._get_video_stream_info(origin_video, task_logger)
+                vw = int(stream.get('width') or 1920)
+                vh = int(stream.get('height') or 1080)
+                ass_path = os.path.join(task_dir, f"bilingual_{task_id}.ass")
+                out = build_bilingual_ass(
+                    source_srt, translated_srt, ass_path,
+                    cfg=self.config,
+                    font_family='Noto Sans CJK SC',
+                    video_width=vw,
+                    video_height=vh,
+                )
+                if out and os.path.isfile(out):
+                    return out, source_srt, translated_srt, subtitle_lang
+                task_logger.warning("重新烧录：生成双语 ASS 失败，退化为单语字幕")
+            except Exception as exc:
+                task_logger.warning("重新烧录：生成双语 ASS 异常，退化为单语字幕: %s", str(exc)[:160])
+        # 退化：中文字幕直接用源；否则用翻译
+        if source_is_zh and source_srt:
+            return source_srt, source_srt, '', subtitle_lang
+        if translated_srt:
+            return translated_srt, source_srt or stored_original, translated_srt, subtitle_lang
+        if source_srt:
+            return source_srt, source_srt, translated_srt or stored_translated, subtitle_lang
+        # 已存在双语 ASS 也允许直接复用
+        existing_ass = os.path.join(task_dir, f"bilingual_{task_id}.ass")
+        if os.path.isfile(existing_ass):
+            return existing_ass, source_srt or stored_original, stored_translated, subtitle_lang
+        return '', source_srt or stored_original, translated_srt or stored_translated, subtitle_lang
+
+    def reburn_subtitle(self, task_id: str, task_logger):
+        """用当前字幕样式配置，从原始视频重新生成并烧录字幕。
+
+        与 _translate_subtitle 不同：本方法固定以“未烧录的原始视频”为输入，
+        避免在已带字幕的成品上二次叠加烧录。重复调用是幂等的（覆盖产物）。
+        """
+        task = get_task(task_id)
+        if not task:
+            task_logger.error("任务不存在，无法重新烧录字幕")
+            return False
+
+        try:
+            task_dir = os.path.join(DOWNLOADS_DIR, task_id)
+            origin_video = self._resolve_original_video(task_id, task, task_dir)
+            if not origin_video or not os.path.isfile(origin_video):
+                task_logger.error("未找到原始视频，无法重新烧录字幕")
+                return False
+
+            burn_path, source_srt, translated_srt, subtitle_lang = self._rebuild_burn_subtitle(
+                task_id, task_dir, task, origin_video, task_logger,
+            )
+            if not burn_path:
+                task_logger.error("未找到可烧录的字幕文件，无法重新烧录")
+                return False
+
+            task_logger.info(f"开始重新烧录字幕（输入: {os.path.basename(origin_video)}）")
+            embedded_video_path = self._embed_subtitle_in_video(
+                task_id, origin_video, burn_path, task_logger,
+            )
+            if not embedded_video_path:
+                task_logger.warning("重新烧录字幕失败，保留原视频与字幕文件")
+                update_task(task_id, subtitle_warning_message='subtitle_embed_failed')
+                return False
+
+            update_task(
+                task_id,
+                video_path_local=embedded_video_path,
+                subtitle_path_original=source_srt,
+                subtitle_path_translated=burn_path,
+                subtitle_language_detected=subtitle_lang,
+                subtitle_warning_message=None,
+            )
+            task_logger.info(f"字幕重新烧录完成: {embedded_video_path}")
+            return True
+        except Exception as e:
+            task_logger.error(f"重新烧录字幕时发生错误: {str(e)}")
+            import traceback
+            task_logger.error(traceback.format_exc())
+            return False
+
     def _run_subtitle_qc(self, task_id: str, srt_path: str, task_logger) -> bool:
         """对 ASR 生成字幕执行预检，每次都重新计算结果。"""
         try:
@@ -8604,6 +8776,49 @@ def force_upload_task(task_id, config=None):
         import traceback
         task_logger.error(traceback.format_exc())
         update_task(task_id, status=TASK_STATES['FAILED'], error_message=f"强制上传失败: {str(e)}")
+        return False
+
+def reburn_subtitle_task(task_id, config=None):
+    """
+    重新烧录字幕：用当前字幕样式配置，从原始视频重新生成并烧录字幕。
+
+    Args:
+        task_id: 任务ID
+        config: 配置信息
+
+    Returns:
+        success: 是否成功
+    """
+    task = get_task(task_id)
+    if not task:
+        logger.error(f"任务 {task_id} 不存在")
+        return False
+
+    # 任务仍在处理中则拒绝，避免与流水线并发写同一产物
+    if _is_task_active(task_id):
+        logger.warning(f"任务 {task_id} 正在处理中，不能重新烧录字幕")
+        return False
+
+    if not config:
+        try:
+            from flask import current_app
+            if 'Y2A_SETTINGS' in current_app.config:
+                config = current_app.config['Y2A_SETTINGS']
+                logger.info("从Flask应用获取配置")
+        except (ImportError, RuntimeError):
+            logger.warning("无法从Flask应用获取配置，使用空配置")
+            config = {}
+
+    processor = get_global_task_processor(config)
+    task_logger = setup_task_logger(task_id)
+
+    try:
+        success = processor.reburn_subtitle(task_id, task_logger)
+        return bool(success)
+    except Exception as e:
+        task_logger.error(f"重新烧录字幕任务 {task_id} 失败: {str(e)}")
+        import traceback
+        task_logger.error(traceback.format_exc())
         return False
 
 # 全局任务处理器实例

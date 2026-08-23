@@ -56,6 +56,8 @@ export const tasksApi = {
   retryFailed: () => api<ApiResponse>(`${V1}/tasks/retry_failed`, { method: 'POST' }),
   resetStuck: () => api<ApiResponse>(`${V1}/tasks/reset_stuck`, { method: 'POST' }),
   reprocess: (taskId: string) => api<ApiResponse>(`${V1}/tasks/${taskId}/reprocess`, { method: 'POST' }),
+  reburnSubtitle: (taskId: string) =>
+    api<ApiResponse>(`${V1}/tasks/${taskId}/reburn_subtitle`, { method: 'POST' }),
   retryTranslation: (taskId: string) =>
     api<ApiResponse>(`${V1}/tasks/${taskId}/retry_translation`, { method: 'POST' }),
   forceUpload: (taskId: string) =>

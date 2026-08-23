@@ -588,6 +588,33 @@ def task_reprocess(task_id):
         return _error('重新处理失败', 500)
 
 
+@api_bp.post('/tasks/<task_id>/reburn_subtitle')
+@api_protected
+def task_reburn_subtitle(task_id):
+    """用当前字幕样式配置，从原始视频重新生成并烧录字幕（后台执行）。"""
+    from .task_manager import reburn_subtitle_task
+    task = get_task(task_id)
+    if not task:
+        return _error('任务不存在', 404)
+
+    video_path = str(task.get('video_path_local') or '').strip()
+    if not video_path or not os.path.isfile(video_path):
+        return _error('任务尚未准备好成片，无法重新烧录字幕')
+
+    def background_reburn():
+        try:
+            success = reburn_subtitle_task(task_id, config=load_config())
+            if not success:
+                logger.error('任务 %s 后台重新烧录字幕失败', task_id)
+        except Exception as e:
+            logger.error('任务 %s 后台重新烧录字幕出错: %s', task_id, e)
+            import traceback
+            logger.error(traceback.format_exc())
+
+    threading.Thread(target=background_reburn, daemon=True, name=f'reburn-{task_id[:8]}').start()
+    return _ok('已启动重新烧录字幕，正在后台处理...')
+
+
 @api_protected
 def tasks_reset_stuck():
     from .task_manager import reset_stuck_tasks
