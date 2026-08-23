@@ -6279,7 +6279,19 @@ class TaskProcessor:
                 task_logger.warning("配音视频封装失败，保留原音频")
                 _restore_status_if_still_dubbing()
                 return True
-            shutil.rmtree(os.path.join(task_dir, '_dub_tmp'), ignore_errors=True)
+            # 只清 cue 级临时文件，保留伴奏分离结果（instrumental/vocals），
+            # 下次重跑配音可直接复用分离结果，避免重新推理（很慢）
+            try:
+                tmp_dir = os.path.join(task_dir, '_dub_tmp')
+                if os.path.isdir(tmp_dir):
+                    for name in os.listdir(tmp_dir):
+                        lower = name.lower()
+                        if lower.endswith(('.mp3', '_placed.wav', '_fitted.wav', '_raw.mp3')):
+                            os.remove(os.path.join(tmp_dir, name))
+                        elif lower in ('dubbed.wav', 'base_duck.wav'):
+                            os.remove(os.path.join(tmp_dir, name))
+            except Exception:
+                pass
             update_task(task_id, video_path_local=out_mp4)
             task_logger.info("配音完成：%s", out_mp4)
             _restore_status_if_still_dubbing()
