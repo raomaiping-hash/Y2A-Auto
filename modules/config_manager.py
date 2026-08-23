@@ -171,10 +171,11 @@ DEFAULT_CONFIG = {
     "SUBTITLE_ZH_SIZE": 60,  # 中文字号（参考 VideoLingo transform 大）
     "SUBTITLE_EN_SIZE": 32,  # 英文字号（比中文小，实现"中文大英文小"）
     "SUBTITLE_ZH_COLOR": "#FFFFFF",  # 中文字幕颜色
-    "SUBTITLE_EN_COLOR": "#DCDCDC",  # 英文字幕颜色
-    "SUBTITLE_OUTLINE_COLOR": "#000000",  # 字幕描边颜色
+    "SUBTITLE_EN_COLOR": "#E8E8E8",  # 英文字幕颜色（略暗于中文，保持主次）
+    "SUBTITLE_OUTLINE_COLOR": "#000000",  # 字幕描边颜色（黑色保证对比度）
     "SUBTITLE_OUTLINE_WIDTH": 3,  # 描边宽度
     "SUBTITLE_SHADOW": 0,  # 阴影
+    "SUBTITLE_BOLD": 1,  # 是否加粗（1=加粗，提高可读性）
     "SUBTITLE_ALIGN": "bottom",  # bottom / center / top
     "SUBTITLE_MARGIN_V": 90,  # 中文字幕距底边距离（英文自动在其下方）
     "SUBTITLE_BOXED": True,  # 是否加半透明背景框（BorderStyle=4）

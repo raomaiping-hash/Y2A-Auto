@@ -164,6 +164,7 @@ const SECTIONS: SectionDef[] = [
       { key: 'SUBTITLE_OUTLINE_COLOR', label: '描边颜色', type: 'color', full: true },
       { key: 'SUBTITLE_OUTLINE_WIDTH', label: '描边宽度', type: 'range', min: 0, max: 10, step: 1 },
       { key: 'SUBTITLE_SHADOW', label: '阴影', type: 'range', min: 0, max: 10, step: 1 },
+      { key: 'SUBTITLE_BOLD', label: '加粗', type: 'toggle', hint: '加粗后更醒目，复杂背景也更易读' },
       { key: 'SUBTITLE_ALIGN', label: '字幕位置', type: 'select', options: [{ value: 'bottom', label: '底部居中' }, { value: 'center', label: '画面居中' }, { value: 'top', label: '顶部居中' }] },
       { key: 'SUBTITLE_MARGIN_V', label: '距底边距离', type: 'range', min: 10, max: 200, step: 2, hint: '中文字幕距底边，英文在其下方' },
       { key: 'SUBTITLE_BOXED', label: '半透明背景框', type: 'toggle', hint: '开启后字幕带半透明黑底，更易读' },
@@ -306,21 +307,24 @@ const subPreview = computed(() => {
   const zhSize = Number(form.SUBTITLE_ZH_SIZE || 60)
   const enSize = Number(form.SUBTITLE_EN_SIZE || 32)
   const zhColor = String(form.SUBTITLE_ZH_COLOR || '#FFFFFF')
-  const enColor = String(form.SUBTITLE_EN_COLOR || '#DCDCDC')
+  const enColor = String(form.SUBTITLE_EN_COLOR || '#E8E8E8')
   const outline = String(form.SUBTITLE_OUTLINE_COLOR || '#000000')
   const outlineW = Number(form.SUBTITLE_OUTLINE_WIDTH || 3)
   const shadow = Number(form.SUBTITLE_SHADOW || 0)
+  const bold = form.SUBTITLE_BOLD === undefined || form.SUBTITLE_BOLD === null ? true : boolOf(form.SUBTITLE_BOLD)
   const boxed = boolOf(form.SUBTITLE_BOXED)
   const align = String(form.SUBTITLE_ALIGN || 'bottom')
   const marginV = Number(form.SUBTITLE_MARGIN_V || 90)
   const showZh = mode !== 'en_only'
   const showEn = mode !== 'zh_only'
-  const bg = boxed ? 'rgba(0,0,0,0.55)' : 'transparent'
-  const pad = boxed ? '6px 14px' : '0'
+  const bg = boxed ? 'rgba(0,0,0,0.58)' : 'transparent'
+  const pad = boxed ? '6px 16px' : '0'
+  const fontWeight = bold ? 700 : 400
   const lineBase = {
     padding: pad,
     background: bg,
-    border: boxed ? 'none' : 'none',
+    border: 'none',
+    fontWeight,
     textShadow: outlineW > 0 ? `0 0 ${outlineW}px ${outline}, 0 ${shadow}px ${shadow * 2}px rgba(0,0,0,.6)` : 'none',
     width: 'max-content',
     maxWidth: '90%',
@@ -329,7 +333,7 @@ const subPreview = computed(() => {
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
-    gap: '4px',
+    gap: '6px',
     left: '0',
     right: '0',
   }

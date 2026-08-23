@@ -67,23 +67,29 @@ def build_bilingual_ass(
     """
     cfg = cfg or {}
     mode = str(cfg.get('SUBTITLE_MODE') or 'bilingual').strip().lower()
+    # 容错：'builtin' 等非法值统一视为双语
+    if mode not in ('en_only', 'zh_only', 'bilingual'):
+        mode = 'bilingual'
     zh_size = int(cfg.get('SUBTITLE_ZH_SIZE') or 60)
     en_size = int(cfg.get('SUBTITLE_EN_SIZE') or 32)
     zh_color = _hex_to_ass(cfg.get('SUBTITLE_ZH_COLOR') or '#FFFFFF')
-    en_color = _hex_to_ass(cfg.get('SUBTITLE_EN_COLOR') or '#DCDCDC')
+    en_color = _hex_to_ass(cfg.get('SUBTITLE_EN_COLOR') or '#FFFFFF')
     outline_color = _hex_to_ass(cfg.get('SUBTITLE_OUTLINE_COLOR') or '#000000')
     outline = int(cfg.get('SUBTITLE_OUTLINE_WIDTH') or 3)
     shadow = int(cfg.get('SUBTITLE_SHADOW') or 0)
     boxed = bool(cfg.get('SUBTITLE_BOXED', True))
     border_style = 4 if boxed else 1
     back_color = _hex_to_ass(cfg.get('SUBTITLE_BOX_COLOR') or '#000000')
-    # 半透明背景框：&HxxBBGGRR，xx=alpha。默认 &H88000000≈53% 黑
+    # 半透明背景框：&HxxBBGGRR，xx=alpha。默认 &H96000000≈59% 黑（保证复杂背景可读）
     if boxed:
-        back_color = '&H' + hex(int(cfg.get('SUBTITLE_BOX_ALPHA') or 0x88))[2:].zfill(2) + back_color[4:]
+        back_color = '&H' + hex(int(cfg.get('SUBTITLE_BOX_ALPHA') or 0x96))[2:].zfill(2) + back_color[4:]
+    bold = int(cfg.get('SUBTITLE_BOLD', 1) or 1)  # 默认加粗，提升可读性
     align_map = {'bottom': 2, 'center': 5, 'top': 8}
     align = align_map.get(str(cfg.get('SUBTITLE_ALIGN') or 'bottom').strip().lower(), 2)
     margin_v = int(cfg.get('SUBTITLE_MARGIN_V') or 90)
-    en_margin = max(8, margin_v - int(zh_size * 0.85))
+    # 英文行在其下方，留出清晰间距（按中文字号动态计算）
+    gap = int(cfg.get('SUBTITLE_LINE_GAP') or max(12, int(zh_size * 0.28)))
+    en_margin = max(4, margin_v - int(zh_size * 0.72) - gap)
 
     src_cues = _parse_srt(source_path)
     tr_cues = _parse_srt(translated_path)
@@ -104,9 +110,9 @@ def build_bilingual_ass(
         'Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, '
         'Alignment, MarginL, MarginR, MarginV, Encoding\n'
         f'Style: Zh,{font_family},{zh_size},{zh_color},{zh_color},{outline_color},{back_color},'
-        '0,0,0,0,100,100,0,0,' + f'{border_style},{outline},{shadow},{align},60,60,{margin_v},1\n'
+        f'-{bold},0,0,0,100,100,0,0,' + f'{border_style},{outline},{shadow},{align},60,60,{margin_v},1\n'
         f'Style: En,{font_family},{en_size},{en_color},{en_color},{outline_color},{back_color},'
-        '0,0,0,0,100,100,0,0,' + f'{border_style},{outline},{shadow},{align},60,60,{en_margin},1\n\n'
+        f'-{bold},0,0,0,100,100,0,0,' + f'{border_style},{outline},{shadow},{align},60,60,{en_margin},1\n\n'
         '[Events]\n'
         'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n'
     )

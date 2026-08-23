@@ -107,6 +107,8 @@ class BilingualSubtitleTests(unittest.TestCase):
             # 两个样式 Zh/En，中文字号比英文大
             self.assertIn('Style: Zh,Noto Sans CJK SC,60', content)
             self.assertIn('Style: En,Noto Sans CJK SC,32', content)
+            # 默认加粗（Bold=-1）且描边为黑色，保证复杂背景下可读性
+            self.assertIn(',&H00000000,&H96000000,-1,0,0,0', content)
             # 双语有两行（一条 Zh + 一条 En dialogue）
             self.assertIn('{\\rZh}经过', content)
             self.assertIn('{\\rEn}After hours of delay', content)
