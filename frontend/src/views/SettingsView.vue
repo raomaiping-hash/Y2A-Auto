@@ -11,7 +11,7 @@ import UiConfirm from '@/components/ui/UiConfirm.vue'
 import CopyButton from '@/components/ui/CopyButton.vue'
 
 /* ================= 字段 schema ================= */
-type FieldType = 'text' | 'password' | 'number' | 'select' | 'textarea' | 'toggle' | 'color'
+type FieldType = 'text' | 'password' | 'number' | 'select' | 'textarea' | 'toggle' | 'color' | 'range'
 interface FieldDef {
   key: string
   label: string
@@ -20,7 +20,9 @@ interface FieldDef {
   placeholder?: string
   options?: { value: string; label: string }[]
   full?: boolean
-  step?: string
+  step?: string | number
+  min?: number
+  max?: number
   sensitive?: boolean
 }
 
@@ -124,17 +126,6 @@ const SECTIONS: SectionDef[] = [
       { key: 'SUBTITLE_TRANSLATE_REFLECT_ENABLED', label: '两阶段意译', type: 'toggle', hint: '先直译再意译成自然对白（双倍 LLM 调用，慢网关慎开）' },
       { key: 'SUBTITLE_CUE_MAX_CHARS', label: '单条字幕最大字数', type: 'number', hint: '超过自动拆成多条短句，时间按字数比例分配；中文词间空格会自动去除' },
       { key: 'SUBTITLE_EMBED_IN_VIDEO', label: '字幕烧录进视频', type: 'toggle' },
-      { key: 'SUBTITLE_MODE', label: '字幕显示模式', type: 'select', options: [{ value: 'bilingual', label: '中英双语（中文大英文小）' }, { value: 'zh_only', label: '只显示中文' }, { value: 'en_only', label: '只显示英文' }], hint: '参考 VideoLingo：双语时中文字幕大、英文字幕小' },
-      { key: 'SUBTITLE_ZH_SIZE', label: '中文字幕字号', type: 'number', step: '1', hint: '双语时中文字幕大小（建议 50-70）' },
-      { key: 'SUBTITLE_EN_SIZE', label: '英文字幕字号', type: 'number', step: '1', hint: '英文字幕大小，比中文小（中文大英文小）' },
-      { key: 'SUBTITLE_ZH_COLOR', label: '中文字幕颜色', type: 'color', full: true },
-      { key: 'SUBTITLE_EN_COLOR', label: '英文字幕颜色', type: 'color', full: true },
-      { key: 'SUBTITLE_OUTLINE_COLOR', label: '字幕描边颜色', type: 'color', full: true },
-      { key: 'SUBTITLE_OUTLINE_WIDTH', label: '描边宽度', type: 'number', step: '1', hint: '0-10，越大越清晰' },
-      { key: 'SUBTITLE_SHADOW', label: '阴影', type: 'number', step: '1' },
-      { key: 'SUBTITLE_ALIGN', label: '字幕位置', type: 'select', options: [{ value: 'bottom', label: '底部居中' }, { value: 'center', label: '画面居中' }, { value: 'top', label: '顶部居中' }] },
-      { key: 'SUBTITLE_MARGIN_V', label: '距边距离', type: 'number', step: '1', hint: '中文字幕距底边，英文自动在其下方' },
-      { key: 'SUBTITLE_BOXED', label: '半透明背景框', type: 'toggle', hint: '开启后字幕带半透明黑底，更易读' },
       { key: 'SUBTITLE_KEEP_ORIGINAL', label: '保留原始字幕文件', type: 'toggle' },
       { key: 'SUBTITLE_QC_ENABLED', label: '启用字幕质检', type: 'toggle', hint: '质量优先：质检失败则不烧录字幕，任务仍会完成' },
       { key: 'SUBTITLE_QC_PROVIDER', label: '质检服务商', type: 'text', placeholder: 'openai' },
@@ -157,6 +148,25 @@ const SECTIONS: SectionDef[] = [
       { key: 'SUBTITLE_MERGE_GAP_S', label: '合并间隙（秒）', type: 'number', step: '0.1' },
       { key: 'SUBTITLE_MIN_TEXT_LENGTH_ENABLED', label: '启用最短文本长度', type: 'toggle' },
       { key: 'SUBTITLE_MIN_TEXT_LENGTH', label: '最短文本长度', type: 'number' },
+    ],
+  },
+  {
+    id: 'subtitle_style',
+    title: '字幕样式',
+    icon: 'bi-easel2',
+    desc: '可视化调节中英双语字幕样式（改动即实时预览，无需保存即可预览）',
+    fields: [
+      { key: 'SUBTITLE_MODE', label: '字幕显示模式', type: 'select', options: [{ value: 'bilingual', label: '中英双语（中文大英文小）' }, { value: 'zh_only', label: '只显示中文' }, { value: 'en_only', label: '只显示英文' }], hint: '参考 VideoLingo：双语时中文字幕大、英文字幕小' },
+      { key: 'SUBTITLE_ZH_SIZE', label: '中文字幕字号', type: 'range', min: 20, max: 100, step: 1, hint: '中文大' },
+      { key: 'SUBTITLE_EN_SIZE', label: '英文字幕字号', type: 'range', min: 10, max: 60, step: 1, hint: '英文小（比中文小）' },
+      { key: 'SUBTITLE_ZH_COLOR', label: '中文字幕颜色', type: 'color', full: true },
+      { key: 'SUBTITLE_EN_COLOR', label: '英文字幕颜色', type: 'color', full: true },
+      { key: 'SUBTITLE_OUTLINE_COLOR', label: '描边颜色', type: 'color', full: true },
+      { key: 'SUBTITLE_OUTLINE_WIDTH', label: '描边宽度', type: 'range', min: 0, max: 10, step: 1 },
+      { key: 'SUBTITLE_SHADOW', label: '阴影', type: 'range', min: 0, max: 10, step: 1 },
+      { key: 'SUBTITLE_ALIGN', label: '字幕位置', type: 'select', options: [{ value: 'bottom', label: '底部居中' }, { value: 'center', label: '画面居中' }, { value: 'top', label: '顶部居中' }] },
+      { key: 'SUBTITLE_MARGIN_V', label: '距底边距离', type: 'range', min: 10, max: 200, step: 2, hint: '中文字幕距底边，英文在其下方' },
+      { key: 'SUBTITLE_BOXED', label: '半透明背景框', type: 'toggle', hint: '开启后字幕带半透明黑底，更易读' },
     ],
   },
   {
@@ -291,7 +301,8 @@ const cookiecloudStatus = ref<Record<string, unknown>>({})
 const subSampleZh = '用各种不同的登机方式'
 const subSampleEn = 'Using a range of different boarding methods'
 const subPreview = computed(() => {
-  const mode = String(form.SUBTITLE_MODE || 'bilingual')
+  let mode = String(form.SUBTITLE_MODE || 'bilingual')
+  if (!['bilingual', 'zh_only', 'en_only'].includes(mode)) mode = 'bilingual'
   const zhSize = Number(form.SUBTITLE_ZH_SIZE || 60)
   const enSize = Number(form.SUBTITLE_EN_SIZE || 32)
   const zhColor = String(form.SUBTITLE_ZH_COLOR || '#FFFFFF')
@@ -798,7 +809,7 @@ function onSettingsScroll() {
               </button>
             </div>
             <div v-if="section.desc" class="section-desc">{{ section.desc }}</div>
-            <div v-if="section.id === 'subtitle'" class="card-body subtitle-preview">
+            <div v-if="section.id === 'subtitle_style'" class="card-body subtitle-preview">
               <div class="field-label">字幕样式实时预览（所见即所得）</div>
               <div class="preview-stage">
                 <div class="preview-sub" :style="subPreview.posStyle">
@@ -842,6 +853,17 @@ function onSettingsScroll() {
                     class="input input-color"
                     style="height: 40px; padding: 2px; width: 72px"
                   />
+                  <div v-else-if="f.type === 'range'" class="range-wrap">
+                    <input
+                      v-model.number="form[f.key]"
+                      type="range"
+                      :min="f.min"
+                      :max="f.max"
+                      :step="f.step || 1"
+                      class="range"
+                    />
+                    <span class="range-val">{{ form[f.key] }}{{ f.step && String(f.step).includes('.') ? '' : '' }}</span>
+                  </div>
                   <select v-else-if="f.type === 'select'" v-model="form[f.key]" class="select">
                     <option v-for="opt in f.options" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
                   </select>
@@ -1363,5 +1385,29 @@ function onSettingsScroll() {
   border-radius: 4px;
   font-weight: 600;
   letter-spacing: 0.5px;
+}
+
+/* 滑杆样式控件 */
+.range-wrap {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  height: 40px;
+}
+.range {
+  flex: 1;
+  accent-color: var(--primary, #4f7cff);
+  height: 6px;
+}
+.range-val {
+  min-width: 34px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.field-input .range-wrap,
+.range-wrap .field-hint {
+  display: block;
 }
 </style>
