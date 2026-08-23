@@ -3696,24 +3696,31 @@ class TaskProcessor:
             task_logger.error("配音：任务不存在")
             return False
 
-        # 中文字幕来源：优先翻译字幕，其次原始字幕（zh）
+        # 中文字幕来源（配音必须是中文文本）：
+        # 1) 任务目录里的纯中文翻译 SRT（translated_{task_id}.srt）—— 最可靠
+        # 2) subtitle_path_translated 若为 .srt（双语 srt 也含中文行，可接受）
+        # 3) subtitle_path_original 仅当其语言检测为中文
         task_dir = os.path.join(DOWNLOADS_DIR, task_id)
         zh_srt = None
-        for candidate in (
-            task.get('subtitle_path_translated'),
-            task.get('subtitle_path_original'),
-        ):
-            if candidate and os.path.isfile(candidate) and str(candidate).lower().endswith('.srt'):
-                zh_srt = candidate
+        # 1) 纯中文翻译产物
+        for name in sorted(os.listdir(task_dir)):
+            if name.startswith('translated_') and name.endswith('.srt'):
+                zh_srt = os.path.join(task_dir, name)
                 break
+        # 2) subtitle_path_translated（双语 srt 兜底）
         if not zh_srt:
-            # 任务目录里找翻译字幕
-            for name in os.listdir(task_dir):
-                if name.startswith('translated_') and name.endswith('.srt'):
-                    zh_srt = os.path.join(task_dir, name)
-                    break
+            cand = task.get('subtitle_path_translated')
+            if cand and os.path.isfile(str(cand)) and str(cand).lower().endswith('.srt'):
+                zh_srt = cand
+        # 3) original 仅限中文
         if not zh_srt:
-            task_logger.warning("配音：未找到中文字幕，跳过配音")
+            cand = task.get('subtitle_path_original')
+            if cand and os.path.isfile(str(cand)) and str(cand).lower().endswith('.srt'):
+                lang = str(task.get('subtitle_language_detected') or '').lower()
+                if lang.startswith('zh'):
+                    zh_srt = cand
+        if not zh_srt:
+            task_logger.warning("配音：未找到中文字幕（翻译产物/双语srt/中文原文均无），跳过配音")
             return False
 
         video_path = task.get('video_path_local')
