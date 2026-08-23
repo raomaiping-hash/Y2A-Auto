@@ -80,6 +80,45 @@ class AlignTests(unittest.TestCase):
 class AssemblyCmdTests(unittest.TestCase):
     """验证合成命令结构（不实际跑 ffmpeg）。"""
 
+    def test_concat_uses_absolute_timeline(self):
+        """回归：拼接必须用绝对 start_ms（字幕时间轴），第一条不从 0 开始也要补静音，
+        否则配音与烧录字幕错位。"""
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured['cmd'] = cmd
+            return _FakeProc()
+
+        seg1 = dubbing.DubSegment(index=0, text='首句', start_ms=3000, end_ms=5000,
+                                  wav_path='/tmp/a.wav', duration_s=2.0)
+        seg2 = dubbing.DubSegment(index=1, text='次句', start_ms=5000, end_ms=8000,
+                                  wav_path='/tmp/b.wav', duration_s=3.0)
+        with patch('modules.dubbing.subprocess.run', side_effect=fake_run), \
+             patch('modules.dubbing.get_ffmpeg_path', return_value='ffmpeg'):
+            dubbing._concat_wav_segments([seg1, seg2], '/tmp/out.wav', None)
+
+        fc = ' '.join(captured['cmd'])
+        # 绝对时间轴：第一条 adelay=3000（不是 0），第二条 adelay=5000
+        self.assertIn('[0:a]adelay=3000|3000', fc)
+        self.assertIn('[1:a]adelay=5000|5000', fc)
+        # 不允许出现相对偏移（3000-3000=0）
+        self.assertNotIn('[0:a]adelay=0|0', fc)
+
+    def test_concat_single_segment_pads_leading_silence(self):
+        """单片段且起始时间非 0：也要补前导静音保证绝对时间轴。"""
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured['cmd'] = cmd
+            return _FakeProc()
+
+        seg = dubbing.DubSegment(index=0, text='首句', start_ms=4000, end_ms=6000,
+                                 wav_path='/tmp/a.wav', duration_s=2.0)
+        with patch('modules.dubbing.subprocess.run', side_effect=fake_run), \
+             patch('modules.dubbing.get_ffmpeg_path', return_value='ffmpeg'):
+            dubbing._concat_wav_segments([seg], '/tmp/out.wav', None)
+        self.assertIn('adelay=4000|4000', ' '.join(captured['cmd']))
+
     def test_assemble_cmd_no_bgm_no_subtitle(self):
         cfg = {'VIDEO_ENCODER': 'cpu', 'VIDEO_CPU_PRESET': 'fast'}
         cmd = self._capture_cmd(cfg, bgm=None, sub=None)

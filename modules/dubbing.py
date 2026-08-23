@@ -210,9 +210,26 @@ def dub_srt_to_audio(
 
 
 def _concat_wav_segments(segments: List[DubSegment], output_wav: str, logger) -> None:
-    """按时间顺序把片段拼接为完整 wav（片段间按字幕时间插入静音）。"""
+    """按时间顺序把片段拼接为完整 wav（片段间按字幕时间插入静音）。
+
+    关键：adelay 使用**绝对时间轴**（start_ms 即视频时间），保证配音与
+    烧录的字幕（同为绝对时间轴）逐句对齐。若第一条字幕不从 0 开始，
+    开头自动补静音。
+    """
     if len(segments) == 1:
-        shutil.copy2(segments[0].wav_path, output_wav)
+        # 单片段也要保证从绝对时间轴开始（补前导静音）
+        only = segments[0]
+        if only.start_ms <= 0:
+            shutil.copy2(only.wav_path, output_wav)
+            return
+        ffmpeg = get_ffmpeg_path(logger=logger)
+        if not ffmpeg:
+            shutil.copy2(only.wav_path, output_wav)
+            return
+        cmd = [ffmpeg, '-y', '-i', only.wav_path,
+               '-filter_complex', f'[0:a]adelay={only.start_ms}|{only.start_ms}[out]',
+               '-map', '[out]', '-ac', '2', '-ar', '44100', output_wav]
+        subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         return
     ffmpeg = get_ffmpeg_path(logger=logger)
     if not ffmpeg:
@@ -222,11 +239,10 @@ def _concat_wav_segments(segments: List[DubSegment], output_wav: str, logger) ->
     inputs = []
     for s in segments:
         inputs += ['-i', s.wav_path]
-    # 计算每段的开始偏移：按字幕时间线放置
+    # 计算每段的开始偏移：绝对时间轴（视频时间），与烧录字幕一致
     filter_parts = []
-    first_start_ms = segments[0].start_ms
     for i, s in enumerate(segments):
-        offset_ms = s.start_ms - first_start_ms
+        offset_ms = max(0, s.start_ms)
         filter_parts.append(f'[{i}:a]adelay={offset_ms}|{offset_ms}[a{i}]')
     n = len(segments)
     mix = ''.join(f'[a{i}]' for i in range(n)) + f'amix=inputs={n}:duration=longest:normalize=0[out]'

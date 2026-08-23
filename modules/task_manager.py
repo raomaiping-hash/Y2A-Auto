@@ -8141,6 +8141,13 @@ class TaskProcessor:
         try:
             _raise_if_cancelled(task_id, task_logger)
             task_dir = os.path.dirname(video_path)
+            # 配音产物已含中文烧录+配音音轨：跳过上传前字幕处理，
+            # 避免用双语 ASS 再烧一遍导致"双语字幕"且与配音时间轴错位。
+            video_stem = os.path.splitext(os.path.basename(video_path))[0]
+            if 'video_dubbed' in video_stem:
+                task_logger.info("检测到配音产物（已含中文字幕），跳过上传前字幕烧录")
+                return get_task(task_id)
+
             reusable_embedded_video = self._get_embedded_video_candidate(video_path)
             if reusable_embedded_video:
                 if reusable_embedded_video != video_path:
