@@ -1213,6 +1213,13 @@ function onSettingsScroll() {
   gap: var(--sp-5);
   align-items: start;
 }
+
+.settings-nav {
+  position: sticky;
+  top: calc(var(--topbar-height) + var(--sp-6));
+  padding: 8px;
+}
+
 @media (max-width: 960px) {
   .settings-layout {
     grid-template-columns: 1fr;
@@ -1225,13 +1232,13 @@ function onSettingsScroll() {
     gap: 4px;
     padding: 8px;
   }
+  /* 移动端横向 tab：去掉竖排的占满整行（更高优先级覆盖默认 width:100%） */
+  .settings-nav .settings-nav-item {
+    width: auto;
+    flex: 0 0 auto;
+  }
 }
 
-.settings-nav {
-  position: sticky;
-  top: calc(var(--topbar-height) + var(--sp-6));
-  padding: 8px;
-}
 .settings-nav-item {
   display: flex;
   align-items: center;
