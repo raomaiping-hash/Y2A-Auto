@@ -24,6 +24,9 @@ logs/
 temp/
 *.tmp
 
+# 配音/翻译缓存（运行时生成，不进 git）
+caches/
+
 # Downloads and generated content
 downloads/
 static/covers/

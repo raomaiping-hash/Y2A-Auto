@@ -165,6 +165,8 @@ class YouTubeMonitor:
                     rate_limit_requests INTEGER DEFAULT 20,
                     rate_limit_window INTEGER DEFAULT 60,
                     last_run_time TEXT,
+                    dub_enabled INTEGER,
+                    dub_voice_id TEXT DEFAULT '',
                     created_time TEXT DEFAULT CURRENT_TIMESTAMP,
                     updated_time TEXT DEFAULT CURRENT_TIMESTAMP
                 )
@@ -242,6 +244,17 @@ class YouTubeMonitor:
             # 添加当前时间段处理偏移量字段
             try:
                 cursor.execute("ALTER TABLE monitor_configs ADD COLUMN historical_offset INTEGER DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass
+
+            # 配音配置（监控模板级覆盖；NULL/空=跟随全局配置）
+            try:
+                cursor.execute("ALTER TABLE monitor_configs ADD COLUMN dub_enabled INTEGER")
+            except sqlite3.OperationalError:
+                pass
+
+            try:
+                cursor.execute("ALTER TABLE monitor_configs ADD COLUMN dub_voice_id TEXT DEFAULT ''")
             except sqlite3.OperationalError:
                 pass
             
@@ -1692,7 +1705,7 @@ class YouTubeMonitor:
             
             # 如果启用自动添加到任务队列，直接添加
             if auto_add_to_tasks:
-                task_id = self._add_video_to_tasks(video_info, auto_start=True)
+                task_id = self._add_video_to_tasks(video_info, auto_start=True, config_id=config_id)
                 if task_id:
                     # 更新数据库标记为已添加
                     cursor.execute(
@@ -1700,13 +1713,29 @@ class YouTubeMonitor:
                         (video_info['id'], config_id)
                     )
     
-    def _add_video_to_tasks(self, video_info, auto_start=True):
-        """将视频添加到任务队列"""
+    def _add_video_to_tasks(self, video_info, auto_start=True, config_id=None):
+        """将视频添加到任务队列（可携带监控模板的配音配置）。"""
         try:
             video_url = f"https://www.youtube.com/watch?v={video_info['id']}"
             task_id = add_task(video_url)
-            
+
             if task_id:
+                # 监控模板级配音配置覆盖（dub_enabled / dub_voice_id）
+                if config_id is not None:
+                    try:
+                        from modules.task_manager import update_task
+                        cfg = self.get_monitor_config(config_id)
+                        dub_updates = {}
+                        if cfg and cfg.get('dub_enabled') is not None:
+                            dub_updates['dub_enabled'] = 1 if cfg.get('dub_enabled') else 0
+                        if cfg and str(cfg.get('dub_voice_id') or '').strip():
+                            dub_updates['dub_voice_id'] = str(cfg['dub_voice_id']).strip()
+                        if dub_updates:
+                            update_task(task_id, silent=True, **dub_updates)
+                            logger.info(f"已应用监控模板配音配置: {dub_updates}")
+                    except Exception as e:
+                        logger.warning(f"应用监控模板配音配置失败（忽略）: {e}")
+
                 logger.info(f"视频已添加到任务队列: {video_info['title']}, 任务ID: {task_id}")
                 
                 # 移除自动启动逻辑，让全局任务处理器的队列管理机制来处理
@@ -1779,7 +1808,7 @@ class YouTubeMonitor:
                         logger.warning(f"读取配置文件失败: {str(e)}")
             
             logger.info(f"手动添加视频到任务队列")
-            task_id = self._add_video_to_tasks(video_info, auto_start=False)
+            task_id = self._add_video_to_tasks(video_info, auto_start=False, config_id=config_id)
             if task_id:
                 self._mark_video_added_to_tasks(video_id, config_id)
                 logger.info(f"视频成功添加到任务队列: {video_info['title']}, 任务ID: {task_id}")

@@ -151,6 +151,17 @@ DEFAULT_CONFIG = {
     "SUBTITLE_GLOSSARY_ENABLED": False,  # 术语表提取：翻译前抽取主题摘要 + 统一术语译法（一次 LLM 调用）
     "SUBTITLE_TRANSLATE_REFLECT_ENABLED": False,  # 两阶段翻译：忠实直译 -> 自然意译（双倍 LLM 调用，慢网关慎开）
     "SUBTITLE_CUE_MAX_CHARS": 22,  # 单条字幕最大字数：超过按短句拆成多条，时间按字数比例分配
+    # 配音（Fish Audio TTS）
+    "DUBBING_ENABLED": False,  # 配音总开关（任务级可覆盖）
+    "DUBBING_VOICE_ID": "fbe02f8306fc4d3d915e9871722a39d5",  # 默认预置音色
+    "FISH_API_KEY": "",  # Fish Audio API Key（https://fish.audio/app/developers）
+    "FISH_TTS_MODEL": "s2.1-pro-free",  # s2.1-pro-free=免费开发模型（fair-use）；s2.1-pro=付费
+    "FISH_TTS_TIMEOUT_SECONDS": 90,  # 单次合成请求超时
+    "FISH_REQUEST_INTERVAL_SECONDS": 0.35,  # 请求间隔，防免费额度限流
+    "DUBBING_BGM_PATH": "",  # 可选背景音乐文件路径（留空=无BGM；完全去掉原声后垫底）
+    "DUBBING_BGM_VOLUME": 0.3,  # BGM 音量（0-1，相对配音；建议 0.3 只作氛围）
+    "DUBBING_OPTIMIZE_SCRIPT_ENABLED": True,  # 配音文案 AI 优化（超长句压缩，意思不变）
+    "DUBBING_ALIGN_OVERFLOW_THRESHOLD": 1.1,  # 预计配音时长超过字幕窗口该倍数时触发优化/变速
     # 并发控制配置
     "MAX_CONCURRENT_TASKS": 2,  # 最大并发任务数
     "MAX_CONCURRENT_UPLOADS": 1,  # 最大并发上传数

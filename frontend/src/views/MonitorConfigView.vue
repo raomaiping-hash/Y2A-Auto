@@ -46,6 +46,8 @@ const form = reactive({
   rate_limit_window: 60,
   auto_add_to_tasks: false,
   video_types: ['video', 'short', 'live'] as string[],
+  dub_enabled: '' as '' | '0' | '1',
+  dub_voice_id: '',
 })
 
 // 快速模板（与旧版一致的三套预设）
@@ -133,6 +135,13 @@ async function load() {
     form.auto_add_to_tasks = !!cfg.auto_add_to_tasks
     const vt = String(cfg.video_types ?? '')
     form.video_types = vt ? vt.split(',').filter((v) => v) : ['video', 'short', 'live']
+    // 配音配置（模板级；''=跟随全局）
+    if (cfg.dub_enabled === 0 || cfg.dub_enabled === 1) {
+      form.dub_enabled = String(cfg.dub_enabled) as '0' | '1'
+    } else {
+      form.dub_enabled = ''
+    }
+    form.dub_voice_id = String(cfg.dub_voice_id ?? '')
   } catch (e) {
     toast.error('加载配置失败', e instanceof ApiError ? e.message : '请稍后重试')
   } finally {
@@ -391,6 +400,27 @@ async function submit() {
               <div class="fs-xs text-muted">开启后新发现的视频将自动开始搬运流程</div>
             </div>
             <UiToggle v-model="form.auto_add_to_tasks" />
+          </div>
+
+          <div class="p-3 toggle-row">
+            <div class="mb-2">
+              <div class="fs-md">配音设置（模板级）</div>
+              <div class="fs-xs text-muted">留空跟随全局配音配置；本模板发现的任务将应用此设置</div>
+            </div>
+            <div class="grid-2">
+              <label class="field">
+                <span class="field-label">配音开关</span>
+                <select v-model="form.dub_enabled" class="select">
+                  <option value="">跟随全局</option>
+                  <option value="1">启用配音</option>
+                  <option value="0">禁用配音</option>
+                </select>
+              </label>
+              <label class="field">
+                <span class="field-label">音色 ID（留空用全局默认）</span>
+                <input v-model="form.dub_voice_id" class="input" placeholder="reference_id" />
+              </label>
+            </div>
           </div>
         </div>
       </div>

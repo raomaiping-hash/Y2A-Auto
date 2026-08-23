@@ -474,6 +474,8 @@ def tasks_add():
     payload = request.get_json(silent=True) or {}
     youtube_url = str(payload.get('youtube_url') or '').strip()
     upload_target = str(payload.get('upload_target') or '').strip().lower()
+    dub_enabled = payload.get('dub_enabled')
+    dub_voice_id = str(payload.get('dub_voice_id') or '').strip()
 
     if not youtube_url:
         return _error('YouTube URL不能为空')
@@ -483,6 +485,17 @@ def tasks_add():
         upload_target = config.get('UPLOAD_TARGET_DEFAULT', 'acfun')
     if upload_target not in ('acfun', 'bilibili', 'both'):
         return _error('无效的投稿平台参数')
+
+    def _apply_dub_options(task_id):
+        if not task_id:
+            return
+        update_kwargs = {}
+        if dub_enabled is not None:
+            update_kwargs['dub_enabled'] = 1 if str(dub_enabled).lower() in ('1', 'true', 'on', 'yes') else 0
+        if dub_voice_id:
+            update_kwargs['dub_voice_id'] = dub_voice_id
+        if update_kwargs:
+            update_task(task_id, silent=True, **update_kwargs)
 
     try:
         is_playlist = 'youtube.com/playlist' in youtube_url or 'youtu.be/playlist' in youtube_url
@@ -497,6 +510,7 @@ def tasks_add():
             for url in video_urls:
                 task_id = add_task(url, upload_target=upload_target)
                 if task_id:
+                    _apply_dub_options(task_id)
                     added_count += 1
                     task_ids.append(task_id)
                     if config.get('AUTO_MODE_ENABLED', False):
@@ -511,6 +525,7 @@ def tasks_add():
             task_id = add_task(youtube_url, upload_target=upload_target)
             if not task_id:
                 return _error('添加任务失败', 500)
+            _apply_dub_options(task_id)
             started = False
             if config.get('AUTO_MODE_ENABLED', False):
                 start_task(task_id, config)
@@ -1358,6 +1373,13 @@ def _monitor_config_from_payload(payload: dict) -> dict:
     else:
         vt = str(video_types or '') or 'video,short,live'
 
+    # 配音配置（监控模板级；None=跟随全局）
+    dub_enabled = payload.get('dub_enabled')
+    if dub_enabled is not None and str(dub_enabled).strip() != '':
+        dub_enabled = 1 if str(dub_enabled).lower() in ('1', 'true', 'on', 'yes') else 0
+    else:
+        dub_enabled = None
+
     return {
         'name': str(payload.get('name') or '').strip(),
         'enabled': bool(payload.get('enabled')),
@@ -1388,6 +1410,8 @@ def _monitor_config_from_payload(payload: dict) -> dict:
         'rate_limit_window': safe_int(payload.get('rate_limit_window'), 60),
         'auto_add_to_tasks': bool(payload.get('auto_add_to_tasks')),
         'video_types': vt,
+        'dub_enabled': dub_enabled,
+        'dub_voice_id': str(payload.get('dub_voice_id') or '').strip(),
     }
 
 

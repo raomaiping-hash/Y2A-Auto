@@ -340,6 +340,9 @@ TASK_STATES = {
     'ASR_TRANSCRIBING': 'asr_transcribing',  # 语音转写中
     'TRANSLATING_SUBTITLE': 'translating_subtitle',  # 正在翻译字幕
     'ENCODING_VIDEO': 'encoding_video',   # 正在转码视频
+    'DUBBING': 'dubbing',                 # 正在配音（TTS 合成）
+    'ALIGNING': 'aligning',               # 正在对齐配音时长
+    'ASSEMBLING': 'assembling',           # 正在合成配音视频
     'TRANSLATING': 'translating',         # 正在翻译
     'TAGGING': 'tagging',                 # 正在生成标签
     'PARTITIONING': 'partitioning',       # 正在推荐分区
@@ -364,6 +367,9 @@ PROCESSING_STATES = [
     TASK_STATES['ASR_TRANSCRIBING'],
     TASK_STATES['TRANSLATING_SUBTITLE'],
     TASK_STATES['ENCODING_VIDEO'],
+    TASK_STATES['DUBBING'],
+    TASK_STATES['ALIGNING'],
+    TASK_STATES['ASSEMBLING'],
     TASK_STATES['UPLOADING'],
 ]
 
@@ -379,6 +385,7 @@ PIPELINE_STAGE_RECOMMEND_PARTITION = 'recommend_partition'
 PIPELINE_STAGE_MODERATE_CONTENT = 'moderate_content'
 PIPELINE_STAGE_DOWNLOAD_VIDEO = 'download_video'
 PIPELINE_STAGE_TRANSLATE_SUBTITLE = 'translate_subtitle'
+PIPELINE_STAGE_DUBBING = 'dubbing'
 PIPELINE_STAGE_UPLOAD_TO_ACFUN = 'upload_to_acfun'
 
 PIPELINE_STAGE_ORDER = [
@@ -389,6 +396,7 @@ PIPELINE_STAGE_ORDER = [
     PIPELINE_STAGE_MODERATE_CONTENT,
     PIPELINE_STAGE_DOWNLOAD_VIDEO,
     PIPELINE_STAGE_TRANSLATE_SUBTITLE,
+    PIPELINE_STAGE_DUBBING,
     PIPELINE_STAGE_UPLOAD_TO_ACFUN,
 ]
 
@@ -1047,7 +1055,9 @@ def init_db():
         acfun_upload_response TEXT,
         bilibili_upload_response TEXT,
         asr_warning_message TEXT,  -- ASR/VAD阶段的非致命警告（如vad_low_coverage），不影响上传流程
-        subtitle_warning_message TEXT  -- 字幕处理阶段的非致命警告（如烧录失败），不影响上传流程
+        subtitle_warning_message TEXT,  -- 字幕处理阶段的非致命警告（如烧录失败），不影响上传流程
+        dub_enabled INTEGER,  -- 配音开关（任务级覆盖；NULL=跟随全局配置）
+        dub_voice_id TEXT  -- 配音音色（任务级覆盖；空=用全局默认音色）
     )
     ''')
     
@@ -1275,6 +1285,16 @@ def init_db():
             logger.info("数据库升级：添加subtitle_warning_message字段")
             conn.commit()
 
+        if 'dub_enabled' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN dub_enabled INTEGER")
+            logger.info("数据库升级：添加dub_enabled字段")
+            conn.commit()
+
+        if 'dub_voice_id' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN dub_voice_id TEXT")
+            logger.info("数据库升级：添加dub_voice_id字段")
+            conn.commit()
+
         # 数据迁移：将 error_message 中纯 ASR/VAD 警告 token 挪至 asr_warning_message，清空 error_message
         cursor.execute(
             "SELECT 1 FROM schema_migrations WHERE migration_key = ? LIMIT 1",
@@ -1482,6 +1502,8 @@ def update_task(task_id, silent=False, **kwargs):
         'bilibili_upload_response': 'bilibili_upload_response = ?',
         'asr_warning_message': 'asr_warning_message = ?',
         'subtitle_warning_message': 'subtitle_warning_message = ?',
+        'dub_enabled': 'dub_enabled = ?',
+        'dub_voice_id': 'dub_voice_id = ?',
     }
 
     # 过滤掉不在白名单中的列
@@ -2706,6 +2728,26 @@ class TaskProcessor:
                         task_logger.error("字幕处理失败，继续执行后续步骤")
                 _raise_if_cancelled(task_id, task_logger)
 
+            # 5.5 配音（可选：DUBBING_ENABLED 全局开关，任务级覆盖）
+            dubbing_enabled = _as_bool(self.config.get('DUBBING_ENABLED', False))
+            task = get_task(task_id)
+            if task and 'dub_enabled' in task and task['dub_enabled'] is not None:
+                dubbing_enabled = _as_bool(task.get('dub_enabled'))
+            if dubbing_enabled:
+                if PIPELINE_STAGE_DUBBING in completed_stages:
+                    task_logger.info("跳过配音（checkpoint已完成）")
+                else:
+                    ok = self._dub_video(task_id, task_logger)
+                    task = get_task(task_id)
+                    if ok:
+                        completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_DUBBING)
+                        task_logger.info("配音完成")
+                    else:
+                        task_logger.warning("配音失败，将用当前视频继续后续流程（不阻断）")
+                _raise_if_cancelled(task_id, task_logger)
+            else:
+                task_logger.info("配音未启用，跳过配音阶段")
+
             # 6. 上传
             if self.config.get('AUTO_MODE_ENABLED', False):
                 # 若已有上传响应，避免重复上传
@@ -3634,6 +3676,231 @@ class TaskProcessor:
                 silent=True,
             )
             return False
+
+    def _dub_video(self, task_id, task_logger):
+        """配音阶段：中文字幕 → 逐条 TTS → 智能混合对齐 → 合成（烧中文字幕 + 可选 BGM）。
+
+        完全去掉原声（用户需求）；BGM 可选垫底。失败不阻断流水线（返回 False），
+        后续流程继续用现有视频。
+        """
+        from modules.dubbing import (
+            dub_srt_to_audio,
+            align_segments_smart_mix,
+            assemble_dubbed_video,
+            estimate_speech_duration_s,
+            parse_srt_to_segments,
+        )
+
+        task = get_task(task_id)
+        if not task:
+            task_logger.error("配音：任务不存在")
+            return False
+
+        # 中文字幕来源：优先翻译字幕，其次原始字幕（zh）
+        task_dir = os.path.join(DOWNLOADS_DIR, task_id)
+        zh_srt = None
+        for candidate in (
+            task.get('subtitle_path_translated'),
+            task.get('subtitle_path_original'),
+        ):
+            if candidate and os.path.isfile(candidate) and str(candidate).lower().endswith('.srt'):
+                zh_srt = candidate
+                break
+        if not zh_srt:
+            # 任务目录里找翻译字幕
+            for name in os.listdir(task_dir):
+                if name.startswith('translated_') and name.endswith('.srt'):
+                    zh_srt = os.path.join(task_dir, name)
+                    break
+        if not zh_srt:
+            task_logger.warning("配音：未找到中文字幕，跳过配音")
+            return False
+
+        video_path = task.get('video_path_local')
+        if not video_path or not os.path.isfile(video_path):
+            task_logger.warning("配音：未找到视频文件，跳过配音")
+            return False
+
+        # 用未烧录的原片作为配音合成基底（assemble 阶段会重新烧中文字幕），
+        # 避免把之前烧好的双语字幕再叠一层。
+        video_path = self._resolve_original_video(task_id, task, task_dir)
+        if not video_path or not os.path.isfile(video_path):
+            video_path = task.get('video_path_local')
+
+        # 音色三级：任务 > 配置默认
+        voice = str(task.get('dub_voice_id') or '').strip() or \
+            str(self.config.get('DUBBING_VOICE_ID') or '').strip()
+        if not voice:
+            task_logger.warning("配音：未配置音色（DUBBING_VOICE_ID），跳过配音")
+            return False
+
+        update_task(task_id, status=TASK_STATES['DUBBING'])
+        task_logger.info(f"开始配音: 音色={voice}, 字幕={os.path.basename(zh_srt)}")
+
+        try:
+            # P2 文案优化：预计配音时长超过字幕窗口 1.1 倍的句子交给 AI 压缩（在配音前处理）
+            zh_srt = self._optimize_dub_script(task_id, zh_srt, task_logger)
+
+            def progress_cb(frac, current, total):
+                if is_task_cancelled(task_id):
+                    raise TaskCancelledError("任务已取消")
+                update_task(task_id, upload_progress=f"配音 {current}/{total}", silent=True)
+
+            dub_wav, segments = dub_srt_to_audio(
+                zh_srt, self.config, task_id, task_logger,
+                voice=voice,
+                output_wav=os.path.join(task_dir, 'dub.wav'),
+                progress_callback=progress_cb,
+            )
+            if not dub_wav or not os.path.isfile(dub_wav):
+                task_logger.warning("配音：合成失败，跳过配音")
+                return False
+
+            update_task(task_id, status=TASK_STATES['ALIGNING'])
+            segments = align_segments_smart_mix(segments, task_logger)
+            # 重新拼接（对齐后时长变化）
+            from modules.dubbing import _concat_wav_segments
+            valid = [s for s in segments if s.wav_path and s.duration_s > 0]
+            if valid:
+                _concat_wav_segments(valid, dub_wav, task_logger)
+
+            # 只烧中文：生成 zh_only ASS
+            zh_ass = os.path.join(task_dir, f"dub_zh_{task_id}.ass")
+            try:
+                from modules.bilingual_subtitles import build_bilingual_ass
+                ass_out = build_bilingual_ass(
+                    zh_srt, zh_srt, zh_ass,
+                    cfg=dict(self.config, SUBTITLE_MODE='zh_only'),
+                    font_family='Noto Sans CJK SC',
+                )
+                if not ass_out or not os.path.isfile(ass_out):
+                    zh_ass = None
+            except Exception as exc:
+                task_logger.warning(f"配音：生成中文字幕 ASS 失败，将不烧字幕: {exc}")
+                zh_ass = None
+
+            update_task(task_id, status=TASK_STATES['ASSEMBLING'])
+            output_video = os.path.join(task_dir, 'video_dubbed.mp4')
+
+            # BGM 可选
+            bgm_path = str(self.config.get('DUBBING_BGM_PATH') or '').strip() or None
+            bgm_volume = float(self.config.get('DUBBING_BGM_VOLUME') or 0.3)
+
+            result = assemble_dubbed_video(
+                video_path, dub_wav, zh_ass, output_video,
+                self.config, task_logger,
+                bgm_path=bgm_path if bgm_path and os.path.isfile(bgm_path) else None,
+                bgm_volume=bgm_volume,
+                burn_subtitle=zh_ass is not None,
+            )
+            if not result or not os.path.isfile(result):
+                task_logger.warning("配音：合成失败，保留原视频")
+                return False
+
+            # 配音产物替换当前视频
+            update_task(task_id, video_path_local=result, upload_progress=None, silent=True)
+            task_logger.info(f"配音完成: {result}")
+            return True
+        except TaskCancelledError:
+            raise
+        except Exception as e:
+            task_logger.error(f"配音阶段异常（不阻断流水线）: {str(e)}")
+            import traceback
+            task_logger.error(traceback.format_exc())
+            update_task(task_id, upload_progress=None, silent=True)
+            return False
+
+    def _optimize_dub_script(self, task_id, srt_path, task_logger):
+        """P2: 配音文案 AI 优化——超长句压缩（意思不变），返回优化后的 SRT 路径。
+
+        仅对"预计配音时长 > 字幕窗口 × DUBBING_ALIGN_OVERFLOW_THRESHOLD(1.1)"的句子
+        调用 LLM 压缩。优化结果以 (原文本, 优化文本) 映射回写；未变化的句子保持原样。
+        """
+        from modules.dubbing import (
+            estimate_speech_duration_s,
+            parse_srt_to_segments,
+            _ms_to_ts,
+        )
+
+        if not _as_bool(self.config.get('DUBBING_OPTIMIZE_SCRIPT_ENABLED', True)):
+            return srt_path
+
+        cues = parse_srt_to_segments(srt_path)
+        if not cues:
+            return srt_path
+
+        threshold = float(self.config.get('DUBBING_ALIGN_OVERFLOW_THRESHOLD') or 1.1)
+        # 找出需要压缩的句子（预计时长超窗口阈值）
+        overflow_items = []
+        for cue in cues:
+            est = estimate_speech_duration_s(cue['text'])
+            window_s = (cue['end_ms'] - cue['start_ms']) / 1000.0
+            if window_s > 0 and est > window_s * threshold:
+                overflow_items.append({
+                    'start_ms': cue['start_ms'],
+                    'end_ms': cue['end_ms'],
+                    'text': cue['text'],
+                    'max_chars': max(4, int(window_s * 4.5 * 0.95)),  # 目标长度（字）
+                })
+        if not overflow_items:
+            task_logger.debug("配音文案优化：无需压缩的句子")
+            return srt_path
+
+        try:
+            from modules.subtitle_translator import get_openai_client
+            client = get_openai_client(self.config)
+            model = self.config.get('OPENAI_MODEL_NAME') or 'gpt-3.5-turbo'
+        except Exception as e:
+            task_logger.warning(f"配音文案优化：无法创建 LLM 客户端，跳过: {e}")
+            return srt_path
+
+        optimized_map = {}
+        for item in overflow_items:
+            original = item['text']
+            max_chars = item['max_chars']
+            prompt = (
+                "你是视频配音文案优化助手。把下面这句话压缩成更短的口语化表达，"
+                "用于中文配音。要求：\n"
+                "1. 意思保持不变，不丢失关键信息；\n"
+                f"2. 目标长度不超过 {max_chars} 个汉字；\n"
+                "3. 口语化、自然、适合朗读；\n"
+                "4. 只输出优化后的一句话，不要任何解释、引号或编号。\n\n"
+                f"原句：{original}"
+            )
+            try:
+                resp = client.chat.completions.create(
+                    model=model,
+                    messages=[{'role': 'user', 'content': prompt}],
+                    temperature=0.3,
+                )
+                optimized = (resp.choices[0].message.content or '').strip()
+                # 去掉可能的引号/编号前缀
+                optimized = optimized.strip('"\'“”').strip()
+                if optimized and len(optimized) <= len(original):
+                    optimized_map[original] = optimized
+                    task_logger.info(f"配音文案优化: 「{original[:24]}…」({len(original)}字) → 「{optimized[:24]}…」({len(optimized)}字)")
+                else:
+                    task_logger.debug(f"配音文案优化：LLM 结果未缩短，保留原句: {original[:30]}")
+            except Exception as e:
+                task_logger.warning(f"配音文案优化失败（保留原句）: {e}")
+
+        if not optimized_map:
+            return srt_path
+
+        # 回写优化后的 SRT
+        optimized_path = os.path.join(os.path.dirname(srt_path), f'dub_optimized_{task_id}.srt')
+        try:
+            with open(srt_path, 'r', encoding='utf-8-sig', errors='replace') as fh:
+                content = fh.read()
+            for original, optimized in optimized_map.items():
+                content = content.replace(original, optimized, 1)
+            with open(optimized_path, 'w', encoding='utf-8') as fh:
+                fh.write(content)
+            task_logger.info(f"配音文案优化完成: {len(optimized_map)} 句已压缩 → {os.path.basename(optimized_path)}")
+            return optimized_path
+        except Exception as e:
+            task_logger.warning(f"配音文案优化：回写失败，用原字幕: {e}")
+            return srt_path
 
     def _resolve_original_video(self, task_id: str, task: dict, task_dir: str) -> str:
         """定位“未烧录”的原始视频文件，供重新烧录使用。

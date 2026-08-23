@@ -40,10 +40,15 @@ export const tasksApi = {
     return api<PaginationPayload>(`${V1}/tasks${suffix}`)
   },
   get: (taskId: string) => api<Task>(`${V1}/tasks/${taskId}`),
-  add: (youtubeUrl: string, uploadTarget?: string) =>
+  add: (youtubeUrl: string, uploadTarget?: string, dubOptions?: { dub_enabled?: string; dub_voice_id?: string }) =>
     api<ApiResponse & { task_id?: string; task_ids?: string[]; count?: number }>(`${V1}/tasks`, {
       method: 'POST',
-      body: { youtube_url: youtubeUrl, upload_target: uploadTarget },
+      body: {
+        youtube_url: youtubeUrl,
+        upload_target: uploadTarget,
+        ...(dubOptions?.dub_enabled ? { dub_enabled: dubOptions.dub_enabled } : {}),
+        ...(dubOptions?.dub_voice_id ? { dub_voice_id: dubOptions.dub_voice_id } : {}),
+      },
     }),
   start: (taskId: string) => api<ApiResponse>(`${V1}/tasks/${taskId}/start`, { method: 'POST' }),
   remove: (taskId: string, deleteFiles = true) =>

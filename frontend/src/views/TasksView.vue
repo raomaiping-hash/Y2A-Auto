@@ -52,12 +52,16 @@ watch(searchText, () => {
 const addOpen = ref(false)
 const addUrl = ref('')
 const addTarget = ref<UploadTarget>('acfun')
+const addDubEnabled = ref('') // ''=跟随全局, '1'=启用, '0'=禁用
+const addDubVoiceId = ref('')
 const addSubmitting = ref(false)
 const addError = ref('')
 
 function openAdd() {
   addUrl.value = ''
   addTarget.value = 'acfun'
+  addDubEnabled.value = ''
+  addDubVoiceId.value = ''
   addError.value = ''
   addOpen.value = true
 }
@@ -67,7 +71,10 @@ async function submitAdd() {
   addError.value = ''
   addSubmitting.value = true
   try {
-    const res = await tasksApi.add(addUrl.value.trim(), addTarget.value)
+    const res = await tasksApi.add(addUrl.value.trim(), addTarget.value, {
+      dub_enabled: addDubEnabled.value,
+      dub_voice_id: addDubVoiceId.value.trim(),
+    })
     toast.success(res.message || '任务已添加')
     addOpen.value = false
     store.setPage(1)
@@ -315,6 +322,20 @@ function uploadProgressValue(task: Task): number | null {
             <option value="both">双平台</option>
           </select>
         </label>
+        <div class="grid-2 mb-3">
+          <label class="field">
+            <span class="field-label">配音（可选）</span>
+            <select v-model="addDubEnabled" class="select">
+              <option value="">跟随全局</option>
+              <option value="1">启用配音</option>
+              <option value="0">禁用配音</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">音色 ID（留空用全局默认）</span>
+            <input v-model="addDubVoiceId" class="input" placeholder="reference_id" />
+          </label>
+        </div>
         <div class="flex justify-between items-center">
           <span class="fs-xs text-muted">提交后任务进入队列，自动模式将立即开始处理</span>
           <div class="flex gap-2">
