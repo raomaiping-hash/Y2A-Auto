@@ -20,6 +20,28 @@ def _write_srt(path, entries):
 
 
 class BilingualSubtitleTests(unittest.TestCase):
+    def test_wrap_text_by_pixels_wraps_long_cjk(self):
+        """超长中文应按画面宽度折行，且不破坏内容。"""
+        text = '在这视野毫无遮挡的高塔上卡珊德拉目睹了一切的发展度过了漫长而痛苦的岁月'
+        wrapped = bs._wrap_text_by_pixels(text, 64, 1920, 60)
+        lines = wrapped.split('\\N')
+        self.assertGreater(len(lines), 1)
+        # 去折行符后内容应与原文一致（无数字token，纯CJK不应插空格）
+        self.assertEqual(''.join(lines).replace('…', ''), text)
+        self.assertNotIn(' ', wrapped)  # 纯 CJK 折行不插入空格
+
+    def test_wrap_text_by_pixels_caps_lines(self):
+        """极长文本应被限制为最多3行并加省略号，绝不无限折行。"""
+        text = '啊' * 200
+        wrapped = bs._wrap_text_by_pixels(text, 64, 1920, 60)
+        lines = wrapped.split('\\N')
+        self.assertEqual(len(lines), 3)
+        self.assertTrue(lines[-1].endswith('…'))
+
+    def test_wrap_text_by_pixels_short_text_untouched(self):
+        """短字幕不被折行。"""
+        self.assertEqual(bs._wrap_text_by_pixels('你好世界', 64, 1920, 60), '你好世界')
+
     def test_trans_src_order(self):
         with tempfile.TemporaryDirectory() as tmp:
             src = os.path.join(tmp, 'src.srt')

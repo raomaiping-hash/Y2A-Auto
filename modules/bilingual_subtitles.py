@@ -40,6 +40,91 @@ def _parse_bool_cfg(value: Any, default: bool = True) -> bool:
     return s in ('1', 'true', 'yes', 'on', 'y')
 
 
+def _wrap_text_by_pixels(text: str, font_size: int, video_width: int, margin_lr: int = 60) -> str:
+    """把过长的字幕文本按可用宽度折行，避免溢出画面。
+
+    估算每行可容纳字符数（CJK 全宽≈font_size，其余≈font_size*0.5），
+    在标点/空格处断行；仍放不下则硬切到该行上限。用 \\N 连接显示行。
+    含空格的拉丁文本按"词"折行，CJK 文本按字符折行。
+    """
+    text = str(text or '').strip()
+    if not text:
+        return text
+    available = max(font_size, (video_width - 2 * margin_lr) * 0.90)  # 留 10% 余量防止贴边溢出
+    # 每行最大字符数（宽字符按全宽 1，窄字符按 0.55）
+    budget = max(2, int(available / font_size))
+    max_lines = 3
+
+    # 分词：拉丁/数字按空格，CJK 逐字符
+    tokens: List[str] = []
+    if any(ch.isspace() for ch in text) and not _is_all_cjk(text):
+        tokens = text.split(' ')
+    else:
+        # CJK 逐字符，但保留非 CJK 连续串（数字/符号）作为整体
+        cur = ''
+        for ch in text:
+            if _is_cjk_char(ch):
+                if cur:
+                    tokens.append(cur)
+                    cur = ''
+                tokens.append(ch)
+            else:
+                cur += ch
+        if cur:
+            tokens.append(cur)
+
+    lines: List[str] = []
+    cur_line = ''
+    cur_w = 0.0
+    for token in tokens:
+        if not token:
+            continue
+        # 判断是否为纯 CJK token（逐字符拆出的，或不含空格的连续中文字串）
+        is_cjk_token = all(_is_cjk_char(ch) for ch in token) if token else False
+        sep = '' if is_cjk_token else ' '
+        sep_w = 0.0 if is_cjk_token else 0.5
+        tok_w = _token_width(token)
+        # CJK 字符与前面 token 直接拼接；拉丁 token 之间需加空格
+        add_w = sep_w + tok_w if cur_line else tok_w
+        if cur_line and cur_w + add_w > budget:
+            lines.append(cur_line)
+            cur_line = token
+            cur_w = tok_w
+            if len(lines) >= max_lines:
+                break
+        else:
+            cur_line = cur_line + sep + token if (cur_line and sep) else cur_line + token
+            cur_w += add_w
+    if cur_line:
+        lines.append(cur_line)
+
+    # 超出最大行数则截断加省略号
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        lines[-1] = lines[-1][: max(1, budget - 1)].rstrip() + '…'
+    return '\\N'.join(lines)
+
+
+def _token_width(token: str) -> float:
+    return sum(1.0 if _is_cjk_char(ch) else 0.5 for ch in token)
+
+
+def _is_all_cjk(text: str) -> bool:
+    cjk = sum(1 for ch in text if _is_cjk_char(ch))
+    return cjk >= len(text) * 0.5
+
+
+def _is_cjk_char(ch: str) -> bool:
+    """判断字符是否为 CJK 全宽字符（中文/日文/韩文）。"""
+    code = ord(ch)
+    return (
+        0x2E80 <= code <= 0x9FFF      # CJK 部首/汉字
+        or 0xF900 <= code <= 0xFAFF   # CJK 兼容表意文字
+        or 0xFF00 <= code <= 0xFFEF   # 全角符号
+        or 0x20000 <= code <= 0x2FA1F  # CJK 扩展 B+
+    )
+
+
 def _seconds_to_ass(seconds: float) -> str:
     """秒 → ASS 时间戳 H:MM:SS.cc（libass 兼容）。"""
     if seconds < 0:
@@ -138,24 +223,28 @@ def build_bilingual_ass(
             sc = _find_source_for(src_cues, tc['start'], tc['end'])
             en = _slice_source_text(sc['text'], sc['start'], sc['end'], tc['start'], tc['end']) if sc else ''
             if en:
+                wrapped = _wrap_text_by_pixels(en, en_size, video_width, 60)
                 lines.append(f"Dialogue: 0,{_seconds_to_ass(tc['start'])},{_seconds_to_ass(tc['end'])},"
-                             f"En,,0,0,0,,{{\\rEn}}{en}")
+                             f"En,,0,0,0,,{{\\rEn}}{wrapped}")
     elif mode == 'zh_only':
         for tc in tr_cues:
             if tc['text']:
+                wrapped = _wrap_text_by_pixels(tc['text'], zh_size, video_width, 60)
                 lines.append(f"Dialogue: 0,{_seconds_to_ass(tc['start'])},{_seconds_to_ass(tc['end'])},"
-                             f"Zh,,0,0,0,,{{\\rZh}}{tc['text']}")
+                             f"Zh,,0,0,0,,{{\\rZh}}{wrapped}")
     else:  # bilingual
         for tc in tr_cues:
             sc = _find_source_for(src_cues, tc['start'], tc['end'])
             en = _slice_source_text(sc['text'], sc['start'], sc['end'], tc['start'], tc['end']) if sc else ''
             st, en_ts = _seconds_to_ass(tc['start']), _seconds_to_ass(tc['end'])
-            # 中文大行在上
+            # 中文大行在上（自动按画面宽度折行，避免溢出）
             if tc['text']:
-                lines.append(f"Dialogue: 0,{st},{en_ts},Zh,,0,0,0,,{{\\rZh}}{tc['text']}")
+                wrapped_zh = _wrap_text_by_pixels(tc['text'], zh_size, video_width, 60)
+                lines.append(f"Dialogue: 0,{st},{en_ts},Zh,,0,0,0,,{{\\rZh}}{wrapped_zh}")
             # 英文小行在下
             if en:
-                lines.append(f"Dialogue: 0,{st},{en_ts},En,,0,0,0,,{{\\rEn}}{en}")
+                wrapped_en = _wrap_text_by_pixels(en, en_size, video_width, 60)
+                lines.append(f"Dialogue: 0,{st},{en_ts},En,,0,0,0,,{{\\rEn}}{wrapped_en}")
 
     if not lines:
         return None
