@@ -525,28 +525,37 @@ class SubtitleWriter:
         """写入SRT字幕文件（长字幕自动拆短句，中文词间空格移除）。"""
         try:
             cues = SubtitleWriter._prepare_cues(items, translated, max_chars)
-            with open(output_path, 'w', encoding='utf-8') as f:
-                for idx, cue in enumerate(cues, 1):
-                    f.write(f"{idx}\n")
-                    f.write(f"{cue['start']} --> {cue['end']}\n")
-                    f.write(f"{cue['text']}\n\n")
-            logger.info(f"SRT文件已保存: {output_path}")
+            SubtitleWriter.write_cues_srt(cues, output_path)
         except Exception as e:
             logger.error(f"写入SRT文件失败: {e}")
+
+    @staticmethod
+    def write_cues_srt(cues: List[dict], output_path: str):
+        """按已准备的 cues 直接写出 SRT（用于修剪/对齐后写入）。"""
+        with open(output_path, 'w', encoding='utf-8') as f:
+            for idx, cue in enumerate(cues, 1):
+                f.write(f"{idx}\n")
+                f.write(f"{cue['start']} --> {cue['end']}\n")
+                f.write(f"{cue['text']}\n\n")
 
     @staticmethod
     def write_vtt(items: List[SubtitleItem], output_path: str, translated: bool = True, max_chars: int = 22):
         """写入VTT字幕文件（长字幕自动拆短句，中文词间空格移除）。"""
         try:
             cues = SubtitleWriter._prepare_cues(items, translated, max_chars)
-            with open(output_path, 'w', encoding='utf-8') as f:
-                f.write("WEBVTT\n\n")
-                for cue in cues:
-                    f.write(f"{cue['start'].replace(',', '.')} --> {cue['end'].replace(',', '.')}\n")
-                    f.write(f"{cue['text']}\n\n")
+            SubtitleWriter.write_cues_vtt(cues, output_path)
             logger.info(f"VTT文件已保存: {output_path}")
         except Exception as e:
             logger.error(f"写入VTT文件失败: {e}")
+
+    @staticmethod
+    def write_cues_vtt(cues: List[dict], output_path: str):
+        """按已准备的 cues 直接写出 VTT。"""
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write("WEBVTT\n\n")
+            for cue in cues:
+                f.write(f"{cue['start'].replace(',', '.')} --> {cue['end'].replace(',', '.')}\n")
+                f.write(f"{cue['text']}\n\n")
 
 class LLMRequester:
     """LLM请求处理器 (与ai_enhancer.py保持一致的调用方式)"""
@@ -1551,24 +1560,100 @@ class SubtitleTranslator:
             return SubtitleWriter._strip_terminal_full_stop(text.strip())
     
     def _write_translated_file(self, items: List[SubtitleItem], output_path: str) -> bool:
-        """写入翻译后的文件"""
+        """写入翻译后的文件（写入前做字幕-时长对齐：超窗句 LLM 修剪，避免配音超快/对不上）。"""
         try:
             output_ext = Path(output_path).suffix.lower()
             max_chars = int(getattr(self.config, 'cue_max_chars', 22) or 22)
+            cues = SubtitleWriter._prepare_cues(items, translated=True, max_chars=max_chars)
+            # 时长-文本对齐：超过"可接受变速上限"的句子在文本端修剪缩短（参考 VideoLingo）
+            cues = self._trim_overlong_cues(cues)
             if output_ext == '.srt':
-                self.writer.write_srt(items, output_path, translated=True, max_chars=max_chars)
+                self.writer.write_cues_srt(cues, output_path)
             elif output_ext == '.vtt':
-                self.writer.write_vtt(items, output_path, translated=True, max_chars=max_chars)
+                self.writer.write_cues_vtt(cues, output_path)
             else:
                 self.logger.error(f"不支持的输出格式: {output_ext}")
                 return False
-            
+
             self.logger.info(f"字幕翻译完成: {output_path}")
             return True
-            
+
         except Exception as e:
             self.logger.error(f"写入翻译文件失败: {e}")
             return False
+
+    def _trim_overlong_cues(self, cues: List[Dict[str, Any]], speed_cap: float = 1.35) -> List[Dict[str, Any]]:
+        """对超出"可接受变速"范围的句子做 LLM 文本修剪，使其能在窗口内自然读完。
+
+        借鉴 VideoLingo check_len_then_trim：当估算读音时长 > 窗口×speed_cap 时，
+        用 LLM 精简该句文本（而非把音频压到 2.25x）。修剪后文本用于字幕+配音，保持一致。
+        """
+        if not cues:
+            return cues
+        out: List[Dict[str, Any]] = []
+        for cue in cues:
+            text = str(cue.get('text') or '').strip()
+            if not text:
+                out.append(cue)
+                continue
+            try:
+                window = (
+                    SubtitleWriter._ts_to_seconds(cue['end'])
+                    - SubtitleWriter._ts_to_seconds(cue['start'])
+                )
+            except Exception:
+                out.append(cue)
+                continue
+            if window <= 0:
+                out.append(cue)
+                continue
+            est = self._estimate_duration(text)
+            if est > window * speed_cap:
+                trimmed = self._llm_trim_text(text, window)
+                if trimmed:
+                    cue['text'] = trimmed
+                    self.logger.info(
+                        "字幕-时长对齐: 修剪 %.1fs 窗口内超窗句 %d字->%d字",
+                        window, len(text), len(trimmed),
+                    )
+            out.append(cue)
+        return out
+
+    @staticmethod
+    def _estimate_duration(text: str) -> float:
+        """估算中文/英文文本朗读时长（秒）。中文按字数×0.25，英文按词数×0.35。"""
+        import re
+        text = str(text or '').strip()
+        if not text:
+            return 0.0
+        cn = len(re.findall(r'[\u4e00-\u9fff]', text))
+        en_words = len(re.findall(r'[A-Za-z]+', text))
+        return cn * 0.25 + en_words * 0.35
+
+    def _llm_trim_text(self, text: str, window_s: float) -> Optional[str]:
+        """用 LLM 把字幕精简到窗口可读长度。失败返回 None（不改文本，交给变速兜底）。"""
+        try:
+            from .prompt_manager import get_subtitle_trim_prompt
+            system_prompt = get_subtitle_trim_prompt(text, window_s)
+            resp = self.llm_requester._create_translation_completion(
+                model_name=self.llm_requester.openai_config.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo'),
+                system_prompt=system_prompt,
+                user_prompt='请精简下面这条字幕。',
+                scene_name='subtitle_trim',
+                json_mode=False,
+            )
+            if not getattr(resp, 'choices', None):
+                return None
+            raw = get_chat_message_text(resp.choices[0].message)
+            # trim 返回 {"result": "精简后文本"}，需从通用 JSON 提取 result 字段
+            data = extract_json_from_text(raw, expected_type=dict)
+            result = str((data or {}).get('result') or '').strip()
+            if result:
+                return SubtitleWriter._remove_cjk_spaces(result)
+            return None
+        except Exception as exc:
+            self.logger.warning("字幕修剪失败，保留原文: %s", str(exc)[:120])
+            return None
     
     def get_subtitle_preview(self, file_path: str, max_items: int = 5) -> List[Dict]:
         """获取字幕预览"""

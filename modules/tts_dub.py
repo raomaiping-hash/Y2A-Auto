@@ -35,8 +35,11 @@ DEFAULT_MODEL = 's2.1-pro-free'
 # ffmpeg atempo 单级合法区间
 _ATEMPO_MIN = 0.5
 _ATEMPO_MAX = 2.0
-# 语速拟合上限（双级 atempo 链覆盖）
-_FIT_SPEED_MAX = 2.25
+# 变速软上限：只允许轻微变速（避免"快进感"）。超窗句应通过修剪文本/拆分解决，
+# 而不是把音频压到 2.25x。参考 VideoLingo speed_factor.accept。
+_FIT_SPEED_MAX = 1.35
+# 中文常态语速估算（秒/字），用于字幕-时长对齐预检（参考 VideoLingo estimate_duration）
+_CN_DUR_PER_CHAR_S = 0.25
 # 独立分离模型
 _DEFAULT_SEPARATION_MODEL = 'UVR_MDXNET_KARA_2'
 # 低于该时长的 cue 视为噪声，跳过
@@ -85,6 +88,21 @@ def fit_cue_speed(tts_duration_s: float, window_duration_s: float) -> float:
     if raw <= 1.0:
         return 1.0
     return min(raw, _FIT_SPEED_MAX)
+
+
+def estimate_duration(text: str) -> float:
+    """估算文本朗读时长（秒）。中文按字数×0.25s/字，英文按词数×0.35s/词。
+
+    用于配音前"字幕-时长对齐"预检：判断某句是否超出窗口可读范围，
+    超窗句应由上层修剪文本而非依赖变速硬压（参考 VideoLingo estimate_duration）。
+    """
+    import re
+    text = str(text or '').strip()
+    if not text:
+        return 0.0
+    cn = len(re.findall(r'[\u4e00-\u9fff]', text))
+    noncn_words = len(re.findall(r'[A-Za-z]+', text))
+    return cn * _CN_DUR_PER_CHAR_S + noncn_words * 0.35
 
 
 class FishAudioTtsClient:
