@@ -173,6 +173,8 @@ const SECTIONS: SectionDef[] = [
       { key: 'TTS_DUB_VOICE_ID', label: '声音 ID（reference_id）', type: 'text', hint: '预建克隆模型 ID；声音来源选固定时生效' },
       { key: 'TTS_DUB_SPEED', label: '语速', type: 'number', step: '0.1', hint: '0.5–2.0，超窗自动加速适配' },
       { key: 'TTS_DUB_BACKGROUND_MODE', label: '背景处理', type: 'select', options: [{ value: 'separate', label: '分离伴奏（推荐，保持背景音）' }, { value: 'duck', label: '压低原声（更快，保留部分原声）' }] },
+      { key: 'TTS_DUB_DUCK_LEVEL', label: '原声压低强度', type: 'number', step: '0.01', hint: 'duck 模式下语音窗原声倍数，0.03≈-30dB 几乎静音、配音突出' },
+      { key: 'TTS_DUB_CUE_GAIN', label: '配音音量增益', type: 'number', step: '0.1', hint: '合成配音音量倍率，2.0≈+6dB 使配音更突出清晰' },
       { key: 'TTS_DUB_MAX_DURATION_MINUTES', label: '分离上限（分钟）', type: 'number', hint: '超过自动转压低模式（保护 CPU）' },
       { key: 'TTS_DUB_MAX_RETRIES', label: '合成重试次数', type: 'number' },
       { key: 'TTS_DUB_RETRY_DELAY', label: '重试延迟（秒）', type: 'number' },

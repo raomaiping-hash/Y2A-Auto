@@ -173,6 +173,8 @@ DEFAULT_CONFIG = {
     "TTS_DUB_VOICE_ID": "",  # 预建声音模型 ID（reference_id）
     "TTS_DUB_SPEED": 1.0,  # 语速 0.5-2.0
     "TTS_DUB_BACKGROUND_MODE": "separate",  # separate=分离伴奏 / duck=压低原声
+    "TTS_DUB_DUCK_LEVEL": 0.03,  # duck 模式：语音窗原声压低倍数（0.03≈-30dB，越小原声让位越多、配音越突出）
+    "TTS_DUB_CUE_GAIN": 2.0,  # 合成配音音量增益倍率（fish.audio 输出偏低，2.0≈+6dB 使配音更突出清晰）
     "TTS_DUB_SEPARATION_MODEL": "UVR_MDXNET_KARA_2.onnx",  # 分离模型文件名（audio-separator）
     "TTS_DUB_MAX_DURATION_MINUTES": 20,  # 超过该时长自动转压低模式（保护 CPU）
     "TTS_DUB_MAX_RETRIES": 3,

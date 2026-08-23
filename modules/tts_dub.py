@@ -244,15 +244,19 @@ def place_audio_at(src: str, start_s: float, out_wav: str, ffmpeg: str, logger: 
     ], logger)
 
 
-def build_duck_track(orig_wav: str, cue_windows: List[Tuple[float, float]], out_wav: str, ffmpeg: str, logger: logging.Logger) -> None:
-    """压低模式：语音时间窗内原轨降 18dB，其余不变。"""
+def build_duck_track(orig_wav: str, cue_windows: List[Tuple[float, float]], out_wav: str, ffmpeg: str, logger: logging.Logger, duck_level: float = 0.03) -> None:
+    """压低模式：语音时间窗内原轨降低 duck_level 倍（默认 0.03≈-30dB），其余不变。
+
+    压低幅度越大，原语音让位越多，合成配音越突出；非语音窗（背景音）保留原声。
+    默认 0.03 使语音窗原声几乎静音，达到"替换人声、保留背景"的效果。
+    """
     if not cue_windows:
         copy_file(orig_wav, out_wav)
         return
     filters = []
     for start_s, end_s in cue_windows:
         filters.append(
-            f"volume=0.125:enable='between(t,{start_s:.3f},{end_s:.3f})'"
+            f"volume={float(duck_level):.4g}:enable='between(t,{start_s:.3f},{end_s:.3f})'"
         )
     _run([
         ffmpeg, '-y', '-i', orig_wav, '-af', ','.join(filters),
@@ -264,23 +268,36 @@ def copy_file(src: str, dst: str) -> None:
     shutil.copyfile(src, dst)
 
 
-def mix_tracks(base_wav: str, overlay_wavs: List[str], out_wav: str, ffmpeg: str, logger: logging.Logger) -> None:
+def mix_tracks(base_wav: str, overlay_wavs: List[str], out_wav: str, ffmpeg: str, logger: logging.Logger, cue_gain: float = 2.0) -> None:
     """叠加多条已定位轨道到基底上。
 
     注意：amix 必须用 normalize=0（求和模式）——默认的 normalize=1 会把
     每条输入除以输入总数，几百条 cue 叠加后整体趋近静音。
     求和后用 alimiter 防止偶发重叠导致的削波。
+
+    cue_gain：对合成配音轨道统一提升倍率（fish.audio 输出音量偏低，
+    默认 2.0≈+6dB 使其相较压低后的原声更突出、清晰）。
     """
     if not overlay_wavs:
         copy_file(base_wav, out_wav)
         return
+    gain = max(0.1, float(cue_gain or 2.0))
     cmd = [ffmpeg, '-y']
     inputs = ['-i', base_wav]
     for w in overlay_wavs:
         inputs += ['-i', w]
     cmd += inputs
-    mix_inputs = ''.join(f'[{i}:a]' for i in range(len(overlay_wavs)))
-    filter_complex = f'[0:a]{mix_inputs}amix=inputs={len(overlay_wavs) + 1}:duration=longest:normalize=0,alimiter=limit=0.95:level=0[aout]'
+    # 并行链用 ; 分隔：base 打标签 + 每个合成轨道加增益打标签，再 amix 求和
+    n = len(overlay_wavs)
+    parts = ['[0:a]anull[base]'] + [
+        f'[{i + 1}:a]volume={gain:.4g}[o{i + 1}]' for i in range(n)
+    ]
+    amix_in = '[base]' + ''.join(f'[o{i + 1}]' for i in range(n))
+    filter_complex = (
+        ';'.join(parts)
+        + f';{amix_in}amix=inputs={n + 1}:duration=longest:normalize=0,'
+          f'alimiter=limit=0.95:level=0[aout]'
+    )
     cmd += [
         '-filter_complex', filter_complex,
         '-map', '[aout]', '-ar', '44100', '-ac', '2', '-c:a', 'pcm_s16le', out_wav,
@@ -564,9 +581,13 @@ def build_dubbed_audio(
 
         cue_windows = [(float(c['start']), float(c['end'])) for c in usable_cues]
         if base_track is None:
-            build_duck_track(orig_wav, cue_windows, os.path.join(tmp_dir, 'base_duck.wav'), ffmpeg, logger)
+            duck_level = max(0.0001, float(config.get('TTS_DUB_DUCK_LEVEL') or 0.03))
+            build_duck_track(
+                orig_wav, cue_windows, os.path.join(tmp_dir, 'base_duck.wav'), ffmpeg, logger,
+                duck_level,
+            )
             base_track = os.path.join(tmp_dir, 'base_duck.wav')
-            logger.info('背景处理：压低模式（原轨语音窗降 18dB）')
+            logger.info('背景处理：压低模式（原轨语音窗降 %.0f dB）', -20.0 * math.log10(duck_level))
 
         # 3. 参考音色
         reference_mode = str(config.get('TTS_DUB_REFERENCE_MODE') or 'auto').strip().lower()
@@ -680,7 +701,10 @@ def build_dubbed_audio(
         # 5. 混合
         logger.info('混合 %d 条配音轨道（共 %d 条 cue）', placed_count, len(usable_cues))
         mixed_wav = os.path.join(tmp_dir, 'dubbed.wav')
-        mix_tracks(base_track, overlays, mixed_wav, ffmpeg, logger)
+        mix_tracks(
+            base_track, overlays, mixed_wav, ffmpeg, logger,
+            float(config.get('TTS_DUB_CUE_GAIN') or 2.0),
+        )
         return mixed_wav, warnings
     except TtsDubError as exc:
         warnings.append(str(exc))
