@@ -78,6 +78,30 @@ class BilingualSubtitleTests(unittest.TestCase):
         self.assertLess(len(sliced.split()), len(text.split()))
         self.assertGreater(len(sliced.split()), 0)
 
+    def test_build_bilingual_ass_bold_string_robustness(self):
+        """SUBTITLE_BOLD 可能是 'on'/'off' 等字符串（设置页 toggle 存法），不应导致构建失败。"""
+        import tempfile
+        from modules.bilingual_subtitles import build_bilingual_ass
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, 'src.srt')
+            tr = os.path.join(tmp, 'tr.srt')
+            out = os.path.join(tmp, 'out.ass')
+            _write_srt(src, [(0.0, 5.0, 'After hours of delay')])
+            _write_srt(tr, [(0.0, 5.0, '经过数小时延误')])
+            for bold_val, expect in (('on', '-1'), ('off', '0'), (1, '-1'), (0, '0')):
+                cfg = {
+                    'SUBTITLE_MODE': 'bilingual',
+                    'SUBTITLE_ZH_SIZE': 60,
+                    'SUBTITLE_EN_SIZE': 32,
+                    'SUBTITLE_BOLD': bold_val,
+                }
+                res = build_bilingual_ass(src, tr, out, cfg, 'Noto Sans CJK SC', 1920, 1080)
+                self.assertTrue(res, f'bold={bold_val!r} 构建失败')
+                with open(out, encoding='utf-8') as fh:
+                    zh_style = next(l for l in fh if l.startswith('Style: Zh,'))
+                self.assertIn(f'Noto Sans CJK SC,60,&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,{expect},',
+                              zh_style, f'bold={bold_val!r} 期望 {expect}')
+
     def test_build_bilingual_ass_styles(self):
         """中文大(60)+英文小(32)，两个样式；双语生成两行，zh_only 只中文。"""
         import tempfile

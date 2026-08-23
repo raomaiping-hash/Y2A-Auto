@@ -26,6 +26,20 @@ def _fmt_ts(seconds: float) -> str:
     return f'{h:02d}:{m:02d}:{s:02d},{ms:03d}'
 
 
+def _parse_bool_cfg(value: Any, default: bool = True) -> bool:
+    """把配置值稳健转换为布尔（兼容 bool/int/str），用于字幕开关类配置。"""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    s = str(value).strip().lower()
+    if s in ('', 'auto'):
+        return default
+    return s in ('1', 'true', 'yes', 'on', 'y')
+
+
 def _seconds_to_ass(seconds: float) -> str:
     """秒 → ASS 时间戳 H:MM:SS.cc（libass 兼容）。"""
     if seconds < 0:
@@ -83,7 +97,8 @@ def build_bilingual_ass(
     # 半透明背景框：&HxxBBGGRR，xx=alpha。默认 &H96000000≈59% 黑（保证复杂背景可读）
     if boxed:
         back_color = '&H' + hex(int(cfg.get('SUBTITLE_BOX_ALPHA') or 0x96))[2:].zfill(2) + back_color[4:]
-    bold = int(cfg.get('SUBTITLE_BOLD', 1) or 1)  # 默认加粗，提升可读性
+    bold = _parse_bool_cfg(cfg.get('SUBTITLE_BOLD', 1), default=True)  # 默认加粗，提升可读性
+    bold_flag = -1 if bold else 0  # ASS：-1=加粗，0=不加粗
     align_map = {'bottom': 2, 'center': 5, 'top': 8}
     align = align_map.get(str(cfg.get('SUBTITLE_ALIGN') or 'bottom').strip().lower(), 2)
     margin_v = int(cfg.get('SUBTITLE_MARGIN_V') or 90)
@@ -110,9 +125,9 @@ def build_bilingual_ass(
         'Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, '
         'Alignment, MarginL, MarginR, MarginV, Encoding\n'
         f'Style: Zh,{font_family},{zh_size},{zh_color},{zh_color},{outline_color},{back_color},'
-        f'-{bold},0,0,0,100,100,0,0,' + f'{border_style},{outline},{shadow},{align},60,60,{margin_v},1\n'
+        f'{bold_flag},0,0,0,100,100,0,0,' + f'{border_style},{outline},{shadow},{align},60,60,{margin_v},1\n'
         f'Style: En,{font_family},{en_size},{en_color},{en_color},{outline_color},{back_color},'
-        f'-{bold},0,0,0,100,100,0,0,' + f'{border_style},{outline},{shadow},{align},60,60,{en_margin},1\n\n'
+        f'{bold_flag},0,0,0,100,100,0,0,' + f'{border_style},{outline},{shadow},{align},60,60,{en_margin},1\n\n'
         '[Events]\n'
         'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n'
     )
