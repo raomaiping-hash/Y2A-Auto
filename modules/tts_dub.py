@@ -35,9 +35,9 @@ DEFAULT_MODEL = 's2.1-pro-free'
 # ffmpeg atempo 单级合法区间
 _ATEMPO_MIN = 0.5
 _ATEMPO_MAX = 2.0
-# 变速软上限：只允许轻微变速（避免"快进感"）。超窗句应通过修剪文本/拆分解决，
-# 而不是把音频压到 2.25x。参考 VideoLingo speed_factor.accept。
-_FIT_SPEED_MAX = 1.35
+# 变速软上限（参考 VideoLingo speed_factor.max=1.4）：超窗句由字幕对齐(合并/修剪)解决，
+# 变速只做轻微适配，避免超快/急促。
+_FIT_SPEED_MAX = 1.4
 # 中文常态语速估算（秒/字），用于字幕-时长对齐预检（参考 VideoLingo estimate_duration）
 _CN_DUR_PER_CHAR_S = 0.25
 # 独立分离模型

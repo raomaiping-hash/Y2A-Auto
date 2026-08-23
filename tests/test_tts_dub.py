@@ -45,10 +45,10 @@ class FitCueSpeedTests(unittest.TestCase):
 
     def test_longer_tts_speed_up_to_fit(self):
         # 8s 语音放进 4s 窗口 → 2x 但被软上限 1.35 截断（超窗句应修剪文本而非硬压）
-        self.assertAlmostEqual(fit_cue_speed(8.0, 4.0), 1.35, places=3)
+        self.assertAlmostEqual(fit_cue_speed(8.0, 4.0), 1.4, places=3)
 
     def test_caps_at_max_fit_speed(self):
-        self.assertAlmostEqual(fit_cue_speed(20.0, 4.0), 1.35, places=3)
+        self.assertAlmostEqual(fit_cue_speed(20.0, 4.0), 1.4, places=3)
 
     def test_zero_window_returns_1(self):
         self.assertEqual(fit_cue_speed(5.0, 0.0), 1.0)

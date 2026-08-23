@@ -1582,14 +1582,17 @@ class SubtitleTranslator:
             self.logger.error(f"写入翻译文件失败: {e}")
             return False
 
-    def _trim_overlong_cues(self, cues: List[Dict[str, Any]], speed_cap: float = 1.35) -> List[Dict[str, Any]]:
-        """字幕-时长对齐（参考 VideoLingo merge_rows + check_len_then_trim）：
-        1. 先合并物理超窗的密集短句到相邻句，放大窗口到可读；
+    def _trim_overlong_cues(self, cues: List[Dict[str, Any]], speed_cap: float = 1.2) -> List[Dict[str, Any]]:
+        """字幕-时长对齐（套用 VideoLingo：min_subtitle_duration + merge_rows + check_len_then_trim）：
+        0. 先做 min_subtitle_duration=2.5：过短字幕合并到相邻或强制延长，消除"极短窗读不完"；
+        1. 再合并物理超窗句到相邻，放大窗口；
         2. 合并后仍超窗的用 LLM 修剪文本缩短；
-        确保每句以自然语速可读（变速只做轻微适配），避免配音超快/对不上。
+        变速只做轻微适配(speed_cap=accept=1.2, 上限 max=1.4)，避免超快/对不上/急促。
         """
         if not cues:
             return cues
+        # 过短字幕(<2.5s)合并或延长，避免极短窗塞不下
+        cues = self._enforce_min_subtitle_duration(cues, min_dur=2.5)
 
         def _win(c):
             try:
@@ -1632,15 +1635,55 @@ class SubtitleTranslator:
         return out
 
     @staticmethod
+    def _enforce_min_subtitle_duration(cues: List[Dict[str, Any]], min_dur: float = 2.5, speed_cap: float = 1.2) -> List[Dict[str, Any]]:
+        """套用 VideoLingo process_srt 的 min_subtitle_duration 逻辑：
+        时长 < min_dur 的字幕，若与下一句紧邻则合并文本+窗口，否则把 end 延长到 start+min_dur。
+        从根源消除"极短窗口读不完"（配音前对齐关键一步）。
+        """
+        if not cues:
+            return cues
+
+        def _win(c):
+            try:
+                return SubtitleWriter._ts_to_seconds(c['end']) - SubtitleWriter._ts_to_seconds(c['start'])
+            except Exception:
+                return 0.0
+
+        out: List[Dict[str, Any]] = []
+        i, n = 0, len(cues)
+        while i < n:
+            cur = dict(cues[i])
+            s = SubtitleWriter._ts_to_seconds(cur['start'])
+            e = SubtitleWriter._ts_to_seconds(cur['end'])
+            if (e - s) < min_dur:
+                if i < n - 1:
+                    ns = SubtitleWriter._ts_to_seconds(cues[i + 1]['start'])
+                    # 紧邻（下一句 start 距本句 start < min_dur）则合并文本+窗口
+                    if (ns - s) < min_dur:
+                        nxt = cues[i + 1]
+                        cur['text'] = (cur.get('text') or '') + (nxt.get('text') or '')
+                        cur['end'] = nxt['end']
+                        out.append(cur)
+                        i += 2
+                        continue
+                # 不紧邻：把 end 延长到 start+min_dur
+                cur['end'] = SubtitleWriter._seconds_to_ts(s + min_dur)
+            out.append(cur)
+            i += 1
+        return out
+
+    @staticmethod
     def _estimate_duration(text: str) -> float:
-        """估算中文/英文文本朗读时长（秒）。中文按字数×0.25，英文按词数×0.35。"""
+        """估算文本朗读时长（秒）。借鉴 VideoLingo：中文 0.21s/字(音节)，
+        英文约 0.28s/词，另加标点停顿(0.1s/标点)。比 0.25s/字 更接近真实语速。"""
         import re
         text = str(text or '').strip()
         if not text:
             return 0.0
         cn = len(re.findall(r'[\u4e00-\u9fff]', text))
         en_words = len(re.findall(r'[A-Za-z]+', text))
-        return cn * 0.25 + en_words * 0.35
+        punct = len(re.findall(r'[，。！？；：、,.!?;:]', text))
+        return cn * 0.21 + en_words * 0.28 + punct * 0.1
 
     def _llm_trim_text(self, text: str, window_s: float) -> Optional[str]:
         """用 LLM 把字幕精简到窗口可读长度。失败返回 None（不改文本，交给变速兜底）。"""
