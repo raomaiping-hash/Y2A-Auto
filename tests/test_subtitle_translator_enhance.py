@@ -156,27 +156,38 @@ class SplitLongCueTests(unittest.TestCase):
 
     def test_long_text_splits_at_word_boundary(self):
         from modules.subtitle_translator import SubtitleWriter
-        segs = SubtitleWriter._split_long_cue('经过数小时延误 你的红眼航班终于开始登机 期待已久的午睡眼看就要实现 可就在', 22)
-        # 按空格拆成完整短句；<=3 字残片"可就在"丢弃，不并入不截断
-        self.assertEqual(segs, [
-            '经过数小时延误',
-            '你的红眼航班终于开始登机',
-            '期待已久的午睡眼看就要实现',
-        ])
+        # 按换行（LLM 语义切好的短句）拆分
+        segs = SubtitleWriter._split_long_cue('经过数小时延误\n你的红眼航班终于开始登机\n期待已久的午睡眼看就要实现', 22)
+        self.assertEqual(segs, ['经过数小时延误', '你的红眼航班终于开始登机', '期待已久的午睡眼看就要实现'])
+
+    def test_conjunction_fallback_splits_overlong(self):
+        from modules.subtitle_translator import SubtitleWriter
+        # 无换行但含连接词：在连接词前断句，不硬切
+        segs = SubtitleWriter._split_long_cue('这些模型专门考虑飞机登机最大的两个瓶颈不过最常用的还是后到前登机法', 22)
+        # 按"不过"拆成 2 条
+        self.assertEqual(len(segs), 2)
+        self.assertTrue(all(len(s) <= 22 for s in segs))
+        self.assertTrue(segs[1].startswith('不过'))
+        self.assertEqual(''.join(segs), '这些模型专门考虑飞机登机最大的两个瓶颈不过最常用的还是后到前登机法')
+
+    def test_no_conjunction_no_newline_kept_whole(self):
+        from modules.subtitle_translator import SubtitleWriter
+        # 无换行也无连接词：不硬切，整句保留（宁长不断词）
+        segs = SubtitleWriter._split_long_cue('减少干扰其他航空公司试过彻底取消指定座位来加快速度', 22)
+        self.assertEqual(segs, ['减少干扰其他航空公司试过彻底取消指定座位来加快速度'])
 
     def test_tiny_fragment_dropped(self):
         from modules.subtitle_translator import SubtitleWriter
-        segs = SubtitleWriter._split_long_cue('这是一个很长的句子用来测试拆分会把最后一个很短的尾段并到前面去 好', 22)
-        # 尾段"好"1字不是完整句，丢弃；无空格超长句均分硬切为两条
-        self.assertEqual(len(segs), 2)
+        # 过短残句丢弃；无换行无连接词超长句整句保留
+        segs = SubtitleWriter._split_long_cue('这是一个很长的句子' + ' 可就在', 22)
         self.assertTrue(all(len(s) > 3 for s in segs))
-        self.assertEqual(''.join(segs), '这是一个很长的句子用来测试拆分会把最后一个很短的尾段并到前面去')
 
     def test_full_sentence_never_truncated(self):
         from modules.subtitle_translator import SubtitleWriter
-        # 每个片段都是完整短句，绝不在句中断开
-        segs = SubtitleWriter._split_long_cue('空客A320 每个人都带随身行李 后到前登机法需要多长时间', 22)
-        self.assertEqual(segs, ['空客A320', '每个人都带随身行李', '后到前登机法需要多长时间'])
+        # 换行分隔的每条都是完整短句，绝不在句中硬切
+        segs = SubtitleWriter._split_long_cue('空客A320 每个人都带随身行李\n后到前登机法需要多长时间', 22)
+        self.assertIn('空客A320 每个人都带随身行李', segs)
+        self.assertIn('后到前登机法需要多长时间', segs)
 
 
 class PrepareCuesTests(unittest.TestCase):
@@ -187,10 +198,10 @@ class PrepareCuesTests(unittest.TestCase):
             start_time='00:00:00,000',
             end_time='00:00:10,000',
             source_text='src',
-            translated_text='一二三四五六七八九十 甲乙丙丁戊己庚辛壬癸',
+            translated_text='一二三四五六七八九十\n甲乙丙丁戊己庚辛壬癸',
         )]
-        cues = SubtitleWriter._prepare_cues(items, translated=True, max_chars=12)
-        # 20 字 > 12 → 拆成两条，各 10 字 → 时间各半
+        cues = SubtitleWriter._prepare_cues(items, translated=True, max_chars=22)
+        # 换行拆成两条，各 10 字 → 时间各半
         self.assertEqual(len(cues), 2)
         t0 = SubtitleWriter._ts_to_seconds(cues[0]['start'])
         t1 = SubtitleWriter._ts_to_seconds(cues[0]['end'])
@@ -216,6 +227,30 @@ class PrepareCuesTests(unittest.TestCase):
         cues = SubtitleWriter._prepare_cues(items, translated=True, max_chars=22)
         self.assertEqual(len(cues), 1)
         self.assertEqual(cues[0]['text'], '这是一条短字幕')
+
+
+class DedupeAdjacentCuesTests(unittest.TestCase):
+    def test_merges_duplicate_adjacent(self):
+        from modules.subtitle_translator import SubtitleWriter
+        cues = [
+            {'start': '00:00:00,000', 'end': '00:00:03,000', 'text': '当有人坐在靠窗位置'},
+            {'start': '00:00:03,000', 'end': '00:00:06,000', 'text': '有人坐在靠窗位置'},
+            {'start': '00:00:06,000', 'end': '00:00:09,000', 'text': '会被同一排人挡住'},
+        ]
+        out = SubtitleWriter._dedupe_adjacent_cues(cues)
+        self.assertEqual(len(out), 2)
+        # 保留较长文本 + 时间并入
+        self.assertEqual(out[0]['text'], '当有人坐在靠窗位置')
+        self.assertEqual(out[0]['end'], '00:00:06,000')
+
+    def test_keeps_distinct_adjacent(self):
+        from modules.subtitle_translator import SubtitleWriter
+        cues = [
+            {'start': '00:00:00,000', 'end': '00:00:03,000', 'text': '这是句子甲'},
+            {'start': '00:00:03,000', 'end': '00:00:06,000', 'text': '这是完全不同的一句子乙'},
+        ]
+        out = SubtitleWriter._dedupe_adjacent_cues(cues)
+        self.assertEqual(len(out), 2)
 
 
 if __name__ == "__main__":

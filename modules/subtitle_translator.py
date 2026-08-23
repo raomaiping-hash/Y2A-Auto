@@ -350,28 +350,76 @@ class SubtitleWriter:
         text = SubtitleWriter._CJK_SPACE_BETWEEN_RE.sub('', text)
         return re.sub(r'[ \t]+', ' ', text).strip()
 
+    # 中文连接词/语气词：用于超长句的自然兜底断句（仅在 LLM 未按换行切分时使用）
+    _CONJUNCTIONS = [
+        '但是', '不过', '然而', '可是', '于是', '因此', '因为', '所以', '然后',
+        '接着', '随后', '同时', '而且', '并且', '加上', '另外', '其中', '尤其',
+        '其实', '总之', '首先', '其次', '最后', '这时', '这时', '反而是', '毕竟',
+        '即便', '即使', '虽然', '尽管', '既然', '后来', '原本', '本来', '这样',
+        '那样', '于是', '结果', '因而', '况且', '何况',
+    ]
+
+    @staticmethod
+    def _split_by_conjunction(text: str, max_chars: int = 22) -> List[str]:
+        """在中文连接词前兜底断句（仅在按换行拆分后仍超长时使用）。
+
+        只在连接词处切分，绝不从词中间切断；若无连接词可拆则整体保留
+        （宁可略超长，也不生硬切断词语）。
+        """
+        if len(text) <= max_chars:
+            return [text]
+        positions = []
+        for conj in SubtitleWriter._CONJUNCTIONS:
+            start = 0
+            while True:
+                idx = str(text).find(conj, start)
+                if idx == -1:
+                    break
+                positions.append(idx)
+                start = idx + len(conj)
+        positions = sorted(set(positions))
+        if not positions:
+            return [text]
+        segs = []
+        remain = text
+        while len(remain) > max_chars:
+            # 在 max_chars 范围内找最靠后的连接词位置作为切点
+            cut = -1
+            for pos in sorted(positions, reverse=True):
+                if pos <= max_chars:
+                    cut = pos
+                    break
+            if cut <= 0:
+                break
+            segs.append(remain[:cut].strip())
+            remain = remain[cut:].strip()
+        if remain:
+            segs.append(remain.strip())
+        return [s for s in segs if s]
+
     @staticmethod
     def _split_long_cue(text: str, max_chars: int = 22) -> List[str]:
-        """把过长字幕拆成多个短字幕（优先按空格断句点）。
+        """把过长字幕拆成多个语义完整的短字幕。
 
-        - 每个空格分隔的片段就是一条完整短句，绝不从中截断；
-        - 片段过短（<=3 字，如 ASR 边界残词"可就在"）不算一句话，直接丢弃；
-        - 若无空格断句点（译文内部未留空格）且仍超长，按 max_chars 硬切兜底，
-          尾段过短并入前段。
+        拆分优先级（避免生硬切断词语）：
+        1. 按换行符拆：LLM 翻译时已按语义切好的短句（Netflix 单句）；
+        2. 仍超长段按中文连接词前断句兜底；
+        3. 不硬切（无连接词可拆则整句保留，宁略超长不切断词）；
+        4. 过短（<=3 字）残句丢弃。
         """
         if not text:
             return [text]
-        if len(text) <= max_chars:
-            return [text]
-        segs = [p for p in str(text).split(' ') if len(p) > 3]
-        if len(segs) == 1 and len(segs[0]) > max_chars:
-            # 无空格断句点：按条数均分硬切，避免尾部碎片
-            s = segs[0]
-            import math
-            n = math.ceil(len(s) / max_chars)
-            per = math.ceil(len(s) / n)
-            segs = [s[i:i + per] for i in range(0, len(s), per)]
-        return segs or [text]
+        # 1) 优先按换行拆（LLM 语义切分），即使总长 <= max_chars 也拆
+        raw = [seg.strip() for seg in str(text).split('\n') if seg.strip()]
+        segs: List[str] = []
+        for seg in raw:
+            if len(seg) > max_chars:
+                segs.extend(SubtitleWriter._split_by_conjunction(seg, max_chars))
+            else:
+                segs.append(seg)
+        # 2) 丢弃 <=3 字残句
+        result = [s for s in segs if len(s) > 3]
+        return result or [text]
 
     @staticmethod
     def _ts_to_seconds(ts: str) -> float:
@@ -416,15 +464,42 @@ class SubtitleWriter:
         return SubtitleWriter._wrap_to_max_lines(SubtitleWriter._strip_terminal_full_stop(text))
 
     @staticmethod
+    def _dedupe_adjacent_cues(cues: List[dict], similarity: float = 0.8) -> List[dict]:
+        """合并相邻语义重复的短句（LLM 两阶段意译 / ASR 边界词导致的相邻复读）。
+
+        相邻两条若一条是另一条子串，或文本相似度 >= threshold，视为重复：
+        保留较长、信息更完整的一条，时间并入（丢弃较短那条的时段）。
+        """
+        if len(cues) < 2:
+            return cues
+        import difflib
+        out: List[dict] = [dict(cues[0])]
+        for cue in cues[1:]:
+            prev = out[-1]
+            a, b = prev['text'], cue['text']
+            if not a or not b:
+                out.append(dict(cue))
+                continue
+            if a in b or b in a or difflib.SequenceMatcher(None, a, b).ratio() >= similarity:
+                # 保留较长文本，时间并入被丢弃条
+                if len(b) > len(a):
+                    prev['text'] = b
+                if cue['end'] > prev['end']:
+                    prev['end'] = cue['end']
+                continue
+            out.append(dict(cue))
+        return out
+
+    @staticmethod
     def _prepare_cues(items: List[SubtitleItem], translated: bool, max_chars: int) -> List[dict]:
-        """清洗 + 拆分 + 去 CJK 空格 + 时间按字数比例分配，产出可写出的 cue 列表。"""
+        """清洗 + 拆分 + 去 CJK 空格 + 时间按字数比例分配 + 相邻去重。"""
         out: List[dict] = []
         for item in items:
             text = item.translated_text if translated and item.translated_text else item.source_text
             if translated:
                 # 1) 去标点（标点替换为空格，保留短句边界）
                 base = SubtitleWriter._strip_terminal_full_stop(text)
-                # 2) 长句拆短句
+                # 2) 按换行/L 连接词拆短句（LLM 语义切分）
                 segs = SubtitleWriter._split_long_cue(base, max_chars)
             else:
                 segs = [str(text or '').strip()]
@@ -443,7 +518,7 @@ class SubtitleWriter:
                     'text': seg,
                 })
                 cursor += seg_dur
-        return out
+        return SubtitleWriter._dedupe_adjacent_cues(out)
 
     @staticmethod
     def write_srt(items: List[SubtitleItem], output_path: str, translated: bool = True, max_chars: int = 22):
@@ -868,7 +943,8 @@ class LLMRequester:
             final_translations = []
             for t in translations[:expected_count]:
                 cleaned = _ass_tag_re.sub('', str(t or '')).strip()
-                cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+                # 保留换行（LLM 用 \n 分隔短句），仅合并行内其他空白
+                cleaned = re.sub(r'[^\S\n]+', ' ', cleaned).strip()
                 final_translations.append(cleaned)
             
             with self._log_lock:
