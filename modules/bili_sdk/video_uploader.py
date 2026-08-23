@@ -794,7 +794,13 @@ class VideoUploader(AsyncEvent):
         )
         if resp.code >= 400:
             self.dispatch(VideoUploaderEvents.PREUPLOAD_FAILED.value, {"page": page})
-            raise NetworkException(resp.code, "")
+            # 携带服务端返回的业务体（如 code:601 “上传视频过快”），便于上层区分限流
+            body = None
+            try:
+                body = resp.json()
+            except Exception:
+                body = None
+            raise NetworkException(resp.code, "", raw=body)
 
         preupload = resp.json()
 

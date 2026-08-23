@@ -3,6 +3,7 @@
 import unittest
 
 from modules import bilibili_uploader as bu
+from modules.bili_sdk.exceptions import NetworkException
 
 
 class FakeNetExc:
@@ -15,6 +16,12 @@ class Bilibili406DetectionTests(unittest.TestCase):
     def test_rate_limited_detected(self):
         """HTTP 406 + body code 601（上传过快）应判定为限流而非普通指纹风控。"""
         exc = FakeNetExc(406, {"code": 601, "message": "您上传视频过快，请您稍作休息后再继续"})
+        self.assertTrue(bu._is_bilibili_rate_limited(exc))
+        self.assertFalse(bu._is_bilibili_http_406(exc))
+
+    def test_rate_limited_via_network_exception_raw(self):
+        """preupload 抛出的 NetworkException 携带 raw 响应体时应被识别为限流。"""
+        exc = NetworkException(406, "", raw={"code": 601, "message": "您上传视频过快，请您稍作休息后再继续"})
         self.assertTrue(bu._is_bilibili_rate_limited(exc))
         self.assertFalse(bu._is_bilibili_http_406(exc))
 
