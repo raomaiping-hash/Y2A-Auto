@@ -615,6 +615,33 @@ def task_reburn_subtitle(task_id):
     return _ok('已启动重新烧录字幕，正在后台处理...')
 
 
+@api_bp.post('/tasks/<task_id>/retranslate_subtitle')
+@api_protected
+def task_retranslate_subtitle(task_id):
+    """重新翻译字幕：清空旧译文，用当前配置重新跑字幕翻译 + 烧录（后台执行）。"""
+    from .task_manager import retranslate_subtitle_task
+    task = get_task(task_id)
+    if not task:
+        return _error('任务不存在', 404)
+
+    video_path = str(task.get('video_path_local') or '').strip()
+    if not video_path or not os.path.isfile(video_path):
+        return _error('任务尚未准备好成片，无法重新翻译字幕')
+
+    def background_retranslate():
+        try:
+            success = retranslate_subtitle_task(task_id, config=load_config())
+            if not success:
+                logger.error('任务 %s 后台重新翻译字幕失败', task_id)
+        except Exception as e:
+            logger.error('任务 %s 后台重新翻译字幕出错: %s', task_id, e)
+            import traceback
+            logger.error(traceback.format_exc())
+
+    threading.Thread(target=background_retranslate, daemon=True, name=f'retranslate-{task_id[:8]}').start()
+    return _ok('已启动重新翻译字幕，正在后台处理...')
+
+
 @api_protected
 def tasks_reset_stuck():
     from .task_manager import reset_stuck_tasks

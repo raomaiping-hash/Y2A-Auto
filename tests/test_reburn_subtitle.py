@@ -5,12 +5,27 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from modules.task_manager import TaskProcessor
+from modules.task_manager import TaskProcessor, _resolve_original_video_for_retranslate
 
 
 class ReburnResolverTests(unittest.TestCase):
     def _make_processor(self, config=None):
         return TaskProcessor(config or {})
+
+    def test_retranslate_resolver_prefers_video_mp4(self):
+        """重新翻译前应定位原始 video.mp4，而非已烧录成品。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            video_mp4 = os.path.join(tmp, 'video.mp4')
+            burned = os.path.join(tmp, 'video_with_subtitle.mp4')
+            nested = os.path.join(tmp, 'video_with_subtitle_with_subtitle.mp4')
+            for p in (video_mp4, burned, nested):
+                with open(p, 'wb') as fh:
+                    fh.write(b'x')
+            task = {'video_path_local': nested}
+            self.assertEqual(
+                _resolve_original_video_for_retranslate(tmp, task, 't'),
+                video_mp4,
+            )
 
     def test_resolve_original_video_prefers_video_mp4(self):
         """存在 video.mp4 时优先使用它，而不是带字幕产物。"""

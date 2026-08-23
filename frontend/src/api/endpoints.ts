@@ -58,6 +58,8 @@ export const tasksApi = {
   reprocess: (taskId: string) => api<ApiResponse>(`${V1}/tasks/${taskId}/reprocess`, { method: 'POST' }),
   reburnSubtitle: (taskId: string) =>
     api<ApiResponse>(`${V1}/tasks/${taskId}/reburn_subtitle`, { method: 'POST' }),
+  retranslateSubtitle: (taskId: string) =>
+    api<ApiResponse>(`${V1}/tasks/${taskId}/retranslate_subtitle`, { method: 'POST' }),
   retryTranslation: (taskId: string) =>
     api<ApiResponse>(`${V1}/tasks/${taskId}/retry_translation`, { method: 'POST' }),
   forceUpload: (taskId: string) =>

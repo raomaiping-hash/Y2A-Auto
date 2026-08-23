@@ -263,6 +263,9 @@ const canReprocess = computed(() => ['ready_for_upload', 'failed'].includes(task
 const canReburnSubtitle = computed(() =>
   ['ready_for_upload', 'failed', 'completed', 'awaiting_manual_review'].includes(task.value?.status ?? '')
 )
+const canRetranslateSubtitle = computed(() =>
+  ['ready_for_upload', 'failed', 'completed', 'awaiting_manual_review'].includes(task.value?.status ?? '')
+)
 
 function reprocess() {
   confirmState.value = {
@@ -284,6 +287,16 @@ async function reburnSubtitle() {
     load()
   } catch (e) {
     toast.error('重新烧录失败', e instanceof ApiError ? e.message : '请稍后重试')
+  }
+}
+
+async function retranslateSubtitle() {
+  try {
+    const r = await tasksApi.retranslateSubtitle(taskId.value)
+    toast.info(r.message)
+    load()
+  } catch (e) {
+    toast.error('重新翻译失败', e instanceof ApiError ? e.message : '请稍后重试')
   }
 }
 
@@ -325,6 +338,9 @@ function formatTime(dt?: string): string {
         </button>
         <button v-if="canReburnSubtitle" class="btn btn-secondary btn-sm" title="用当前字幕样式配置从原始视频重新烧录字幕" @click="reburnSubtitle">
           <i class="bi bi-film"></i> 重新烧录字幕
+        </button>
+        <button v-if="canRetranslateSubtitle" class="btn btn-secondary btn-sm" title="清空旧译文，重新跑字幕翻译（限流/失败导致缺字幕时用）" @click="retranslateSubtitle">
+          <i class="bi bi-translate"></i> 重新翻译
         </button>
         <button v-if="canStart" class="btn btn-primary btn-sm" @click="startTask">
           <i class="bi bi-play-fill"></i> 开始处理

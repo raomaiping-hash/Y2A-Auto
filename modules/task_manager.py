@@ -8866,6 +8866,118 @@ def reburn_subtitle_task(task_id, config=None):
         task_logger.error(traceback.format_exc())
         return False
 
+
+def _resolve_original_video_for_retranslate(task_dir, task, task_id) -> str:
+    """重新翻译前定位原始（未烧录）视频，避免在已烧录成品上二次叠加。
+
+    优先返回任务目录中的 video.mp4；否则回退到非 *_with_subtitle 的视频。
+    """
+    # 1) 任务目录中的 video.mp4（下载原片）
+    if os.path.isfile(os.path.join(task_dir, 'video.mp4')):
+        return os.path.join(task_dir, 'video.mp4')
+    # 2) 扫描任务目录中第一个非带字幕 mp4
+    try:
+        for name in sorted(os.listdir(task_dir)):
+            if not isinstance(name, str) or not name.lower().endswith('.mp4'):
+                continue
+            if 'with_subtitle' in name.lower() or name.startswith('.'):
+                continue
+            return os.path.join(task_dir, name)
+    except Exception:
+        pass
+    # 3) 兜底：当前 video_path_local（若本身非带字幕）
+    vp = str((task or {}).get('video_path_local') or '')
+    if vp and os.path.isfile(vp):
+        vname = os.path.splitext(os.path.basename(vp))[0]
+        if not vname.endswith('_with_subtitle'):
+            return vp
+    return ''
+
+
+def retranslate_subtitle_task(task_id, config=None):
+    """重新翻译字幕：清空旧译文/双语产物，用当前配置重新跑字幕翻译 + 烧录。
+
+    与 reprocess_task 不同：本函数只重跑“字幕翻译/烧录”阶段，不重跑下载、
+    采集、标签等已完成阶段；适合字幕翻译因限流/失败而缺失时手动补翻。
+
+    Args:
+        task_id: 任务ID
+        config: 配置信息
+
+    Returns:
+        success: 是否成功调度
+    """
+    task = get_task(task_id)
+    if not task:
+        logger.error(f"任务 {task_id} 不存在")
+        return False
+
+    if _is_task_active(task_id):
+        logger.warning(f"任务 {task_id} 正在处理中，不能重新翻译字幕")
+        return False
+
+    if not config:
+        try:
+            from flask import current_app
+            if 'Y2A_SETTINGS' in current_app.config:
+                config = current_app.config['Y2A_SETTINGS']
+                logger.info("从Flask应用获取配置")
+        except (ImportError, RuntimeError):
+            logger.warning("无法从Flask应用获取配置，使用空配置")
+            config = {}
+
+    # 清掉旧的翻译/双语产物，强制重新翻译
+    task_dir = os.path.join(DOWNLOADS_DIR, task_id)
+    try:
+        if os.path.isdir(task_dir):
+            for name in os.listdir(task_dir):
+                if not isinstance(name, str):
+                    continue
+                lower = name.lower()
+                if lower.startswith('translated_') or lower.startswith('bilingual_') or lower.startswith('video_with_subtitle'):
+                    try:
+                        os.remove(os.path.join(task_dir, name))
+                    except OSError:
+                        pass
+    except Exception as e:
+        logger.warning(f"清理旧字幕产物失败（忽略）: {e}")
+
+    # 回到原始视频，避免在已有字幕成品上二次叠加烧录
+    original_video = _resolve_original_video_for_retranslate(task_dir, task, task_id)
+
+    update_task(
+        task_id,
+        status=TASK_STATES['TRANSLATING_SUBTITLE'],
+        video_path_local=original_video,
+        subtitle_path_translated=None,
+        subtitle_qc_failed=0,
+        subtitle_qc_reason=None,
+        subtitle_qc_score=None,
+        subtitle_qc_checked_at=None,
+        subtitle_warning_message=None,
+        error_message=None,
+        error_category=None,
+    )
+
+    processor = get_global_task_processor(config)
+    task_logger = setup_task_logger(task_id)
+
+    def _background_retranslate():
+        try:
+            ok = processor._translate_subtitle(task_id, task_logger, embed_in_video_override=True)
+            if ok:
+                task_logger.info("重新翻译字幕完成")
+            else:
+                task_logger.error("重新翻译字幕失败")
+        except Exception as e:
+            task_logger.error(f"重新翻译字幕出错: {str(e)}")
+            import traceback
+            task_logger.error(traceback.format_exc())
+
+    threading.Thread(target=_background_retranslate, daemon=True, name=f'retranslate-{task_id[:8]}').start()
+    return True
+
+
 # 全局任务处理器实例
 _global_task_processor = None
 
