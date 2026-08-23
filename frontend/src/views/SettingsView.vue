@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { settingsApi } from '@/api/endpoints'
 import { useToastStore } from '@/stores/toast'
 import { ApiError } from '@/api/client'
@@ -286,6 +286,53 @@ const form = reactive<Record<string, any>>({})
 const passwordSet = ref(false)
 const tgbotState = ref<Record<string, unknown>>({})
 const cookiecloudStatus = ref<Record<string, unknown>>({})
+
+// 字幕样式实时预览（可视化）：用当前配置渲染示例中英字幕
+const subSampleZh = '用各种不同的登机方式'
+const subSampleEn = 'Using a range of different boarding methods'
+const subPreview = computed(() => {
+  const mode = String(form.SUBTITLE_MODE || 'bilingual')
+  const zhSize = Number(form.SUBTITLE_ZH_SIZE || 60)
+  const enSize = Number(form.SUBTITLE_EN_SIZE || 32)
+  const zhColor = String(form.SUBTITLE_ZH_COLOR || '#FFFFFF')
+  const enColor = String(form.SUBTITLE_EN_COLOR || '#DCDCDC')
+  const outline = String(form.SUBTITLE_OUTLINE_COLOR || '#000000')
+  const outlineW = Number(form.SUBTITLE_OUTLINE_WIDTH || 3)
+  const shadow = Number(form.SUBTITLE_SHADOW || 0)
+  const boxed = boolOf(form.SUBTITLE_BOXED)
+  const align = String(form.SUBTITLE_ALIGN || 'bottom')
+  const marginV = Number(form.SUBTITLE_MARGIN_V || 90)
+  const showZh = mode !== 'en_only'
+  const showEn = mode !== 'zh_only'
+  const bg = boxed ? 'rgba(0,0,0,0.55)' : 'transparent'
+  const pad = boxed ? '6px 14px' : '0'
+  const lineBase = {
+    padding: pad,
+    background: bg,
+    border: boxed ? 'none' : 'none',
+    textShadow: outlineW > 0 ? `0 0 ${outlineW}px ${outline}, 0 ${shadow}px ${shadow * 2}px rgba(0,0,0,.6)` : 'none',
+    width: 'max-content',
+    maxWidth: '90%',
+  }
+  const posStyle: Record<string, string> = {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: '4px',
+    left: '0',
+    right: '0',
+  }
+  if (align === 'top') posStyle.top = Math.max(8, Math.round(marginV / 3)) + 'px'
+  else if (align === 'center') { posStyle.top = '50%'; posStyle.transform = 'translateY(-50%)' }
+  else posStyle.bottom = Math.max(8, Math.round(marginV / 3)) + 'px'
+  return {
+    showZh,
+    showEn,
+    posStyle,
+    zhStyle: { ...lineBase, fontSize: zhSize + 'px', color: zhColor },
+    enStyle: { ...lineBase, fontSize: enSize + 'px', color: enColor },
+  }
+})
 
 const newPassword = ref('')
 const confirmPassword = ref('')
@@ -751,6 +798,15 @@ function onSettingsScroll() {
               </button>
             </div>
             <div v-if="section.desc" class="section-desc">{{ section.desc }}</div>
+            <div v-if="section.id === 'subtitle'" class="card-body subtitle-preview">
+              <div class="field-label">字幕样式实时预览（所见即所得）</div>
+              <div class="preview-stage">
+                <div class="preview-sub" :style="subPreview.posStyle">
+                  <div v-if="subPreview.showZh" class="preview-line" :style="subPreview.zhStyle">{{ subSampleZh }}</div>
+                  <div v-if="subPreview.showEn" class="preview-line" :style="subPreview.enStyle">{{ subSampleEn }}</div>
+                </div>
+              </div>
+            </div>
             <div class="card-body fields-grid">
               <div v-for="f in section.fields" :key="f.key" class="field" :class="{ 'field-full': f.full }">
                 <template v-if="f.type === 'toggle'">
@@ -1283,5 +1339,29 @@ function onSettingsScroll() {
 .qr-hint {
   font-size: var(--fs-sm);
   color: var(--text-secondary);
+}
+
+/* 字幕样式实时预览 */
+.subtitle-preview {
+  padding-bottom: 6px;
+}
+.preview-stage {
+  position: relative;
+  height: 170px;
+  border-radius: var(--radius-md);
+  background: linear-gradient(135deg, #3a4a5a 0%, #2a3440 55%, #1d242e 100%);
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+}
+.preview-sub {
+  position: absolute;
+  text-align: center;
+  line-height: 1.25;
+}
+.preview-line {
+  display: inline-block;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
 }
 </style>
