@@ -404,6 +404,122 @@ def separate_instrumental(
         _SEPARATION_LOCK.release()
 
 
+def _split_narration_into_cues(text: str, max_chars: int = 20) -> List[str]:
+    """把一段连续旁白按标点/长度切成短句块（供字幕分屏显示，避免整段堆叠超框）。
+
+    优先在中文标点（。！？；，）处断句；单块超过 max_chars 则强制在最近标点前切，
+    无标点则按长度硬切。返回按语言顺序排列的短句列表。
+    """
+    import re
+    text = str(text or '').strip()
+    if not text:
+        return []
+    # 归一化常见分隔，切出“句”级候选
+    parts = re.split(r'(?<=[。！？；，、])', text)
+    parts = [p.strip() for p in parts if p and p.strip()]
+    chunks: List[str] = []
+    for part in parts:
+        # 单句仍超长：继续按长度+标点切
+        while len(part) > max_chars:
+            window = part[:max_chars]
+            # 在窗口内找最后一个标点，尽量在标点处切
+            cut = -1
+            for idx in range(len(window) - 1, 0, -1):
+                if window[idx] in '，。；、！？':
+                    cut = idx
+                    break
+            if cut <= 0 or cut >= len(part) - 1:
+                cut = max_chars
+            chunks.append(part[:cut].strip())
+            part = part[cut:].strip()
+        if part:
+            chunks.append(part)
+    return [c for c in chunks if c]
+
+
+def separate_instrumental_via_api(
+    audio_wav: str,
+    out_dir: str,
+    api_url: str,
+    api_key: str,
+    model: str,
+    ffmpeg: str,
+    logger: logging.Logger,
+) -> Optional[str]:
+    """调用云端音频分离 API（free.ai /v1/music/separate）把原声去掉，取 instrumental 纯背景。
+
+    返回纯背景 wav 路径；失败返回 None（由调用方降级）。
+    上传前把原声编码为 128k 立体声 mp3（小于 50MB 限制、更快）；分离结果下载到 out_dir。
+    """
+    import requests
+    from urllib.parse import urlparse
+
+    if not api_key:
+        logger.warning('云端分离未配置 API Key，跳过')
+        return None
+    if not api_url:
+        logger.warning('云端分离未配置 API 地址，跳过')
+        return None
+
+    try:
+        mp3_path = os.path.join(out_dir, 'orig_for_separation.mp3')
+        _run([
+            ffmpeg, '-y', '-i', audio_wav,
+            '-ac', '2', '-ar', '44100', '-c:a', 'libmp3lame', '-b:a', '128k',
+            mp3_path,
+        ], logger)
+        if not os.path.isfile(mp3_path) or os.path.getsize(mp3_path) <= 0:
+            logger.warning('云端分离源音频编码失败')
+            return None
+
+        with open(mp3_path, 'rb') as fh:
+            files = {'file': ('audio.mp3', fh, 'audio/mpeg')}
+            resp = requests.post(
+                api_url,
+                headers={'Authorization': f'Bearer {api_key}'},
+                files=files,
+                data={'model': str(model or 'demucs')},
+                timeout=600,
+            )
+        if resp.status_code != 200:
+            logger.warning('云端分离请求失败 HTTP %s: %s', resp.status_code, resp.text[:160])
+            return None
+        data = resp.json() or {}
+        stems = data.get('stems') or {}
+        stem_url = stems.get('instrumental') or stems.get('no_vocals')
+        if not stem_url:
+            logger.warning('云端分离未返回 instrumental stem')
+            return None
+
+        # stem_url 可能是相对路径（/static/outputs/...），补齐主机
+        if not str(stem_url).startswith('http'):
+            parsed = urlparse(str(api_url))
+            stem_url = f'{parsed.scheme}://{parsed.netloc}{stem_url}'
+
+        # 下载（分离结果可能稍后才就绪，做短重试）
+        out_wav = os.path.join(out_dir, 'instrumental.wav')
+        last_err = ''
+        for attempt in range(1, 6):
+            try:
+                dl = requests.get(stem_url, headers={'Authorization': f'Bearer {api_key}'}, timeout=120)
+            except Exception as exc:
+                last_err = f'{type(exc).__name__}: {str(exc)[:100]}'
+                dl = None
+            if dl is not None and dl.status_code == 200 and dl.content:
+                with open(out_wav, 'wb') as fh:
+                    fh.write(dl.content)
+                logger.info('云端分离 instrumental 已就绪（第 %d 次）', attempt)
+                return out_wav
+            last_err = f'HTTP {dl.status_code if dl is not None else "?"}' if dl is not None else last_err
+            if attempt < 5:
+                time.sleep(3 * attempt)
+        logger.warning('云端分离结果下载失败: %s', last_err)
+        return None
+    except Exception as exc:
+        logger.warning('云端分离异常: %s', str(exc)[:180])
+        return None
+
+
 # ---------------------------------------------------------------- cue 参考样本
 
 def extract_reference_sample(
@@ -628,20 +744,39 @@ def _fmt_srt_ts(seconds: float) -> str:
     return f'{h:02d}:{m:02d}:{s:02d},{ms:03d}'
 
 
+_SUBTITLE_MAX_CHARS = 20  # 单条字幕块最大字数（避免整段堆叠/超框），配合 ASS 折行渲染
+
+
 def write_aligned_dub_subtitle(mapped: List[Dict[str, Any]], out_srt: str) -> Optional[str]:
-    """把映射到视频时间轴上的旁白段写成可见字幕 srt，使画面字幕 = 旁白（对得上）。
-    每段文字即该段旁白原文，时间轴来自 _map_segments_to_video 的 video_start/video_end。
+    """把映射到视频时间轴上的旁白段写成"画面字幕 = 旁白"的 srt。
+
+    每段旁白被切成若干短块（≤_SUBTITLE_MAX_CHARS 字，优先在标点处断），
+    并按字数比例把该段被映射/拉伸后的完整时长（video_start ~ video_end）
+    分配给各块，使字幕连续、逐块跟随语速（音频已拉伸填满该窗口，无空档）。
     返回输出路径；无有效段时返回 None。
     """
     segs = [m for m in mapped if str(m.get('text') or '').strip()]
     if not segs:
         return None
     lines: List[str] = []
-    for i, ms in enumerate(segs, 1):
-        lines.append(str(i))
-        lines.append(f"{_fmt_srt_ts(float(ms['video_start']))} --> {_fmt_srt_ts(float(ms['video_end']))}")
-        lines.append(str(ms['text']).strip())
-        lines.append('')
+    idx = 1
+    for ms in segs:
+        start = float(ms['video_start'])
+        end = float(ms['video_end'])
+        if end - start <= 0:
+            end = start + max(0.5, float(ms.get('src_end', start)) - float(ms.get('src_start', start)))
+        chunks = _split_narration_into_cues(str(ms['text']), _SUBTITLE_MAX_CHARS)
+        total_chars = sum(len(c) for c in chunks) or 1
+        cursor = start
+        for chunk in chunks:
+            dur = (end - start) * (len(chunk) / total_chars)
+            sub_end = min(end, cursor + max(0.4, dur))
+            lines.append(str(idx))
+            lines.append(f"{_fmt_srt_ts(cursor)} --> {_fmt_srt_ts(sub_end)}")
+            lines.append(chunk)
+            lines.append('')
+            cursor = sub_end
+            idx += 1
     content = '\n'.join(lines).strip() + '\n'
     os.makedirs(os.path.dirname(out_srt), exist_ok=True)
     with open(out_srt, 'w', encoding='utf-8') as fh:
@@ -709,30 +844,47 @@ def build_dubbed_audio(
 
         # 2. 背景处理
         bg_mode = str(config.get('TTS_DUB_BACKGROUND_MODE') or 'separate').strip().lower()
-        max_minutes = float(config.get('TTS_DUB_MAX_DURATION_MINUTES', 20) or 20)
-        if bg_mode == 'separate' and total_duration > max_minutes * 60:
-            logger.info('视频时长 %.1f 分钟超过 %.0f 分钟上限，转为压低模式', total_duration / 60, max_minutes)
-            bg_mode = 'duck'
+        # 云端/本地分离对 CPU 无压力，只有本地分离才受时长保护上限（避免 OOM/卡死）
+        if bg_mode == 'separate':
+            max_minutes = float(config.get('TTS_DUB_MAX_DURATION_MINUTES', 20) or 20)
+            if total_duration > max_minutes * 60:
+                logger.info('视频时长 %.1f 分钟超过 %.0f 分钟上限，转为压低模式', total_duration / 60, max_minutes)
+                bg_mode = 'duck'
 
         base_track: Optional[str] = None
-        if bg_mode == 'separate':
-            # 复用上次尝试已分离的伴奏（重跑不重复推理）
-            cached = [
-                os.path.join(tmp_dir, f)
-                for f in sorted(os.listdir(tmp_dir))
-                if 'instrumental' in f.lower() and f.lower().endswith('.wav')
-                and os.path.getsize(os.path.join(tmp_dir, f)) > 1024
-            ]
-            if cached:
-                base_track = cached[0]
-                logger.info('背景处理：复用上次分离结果 %s', os.path.basename(base_track))
-        if bg_mode == 'separate' and base_track is None:
+        # 复用上次尝试已分离的伴奏（重跑不重复推理/不重复付费）
+        cached = [
+            os.path.join(tmp_dir, f)
+            for f in sorted(os.listdir(tmp_dir))
+            if 'instrumental' in f.lower() and f.lower().endswith('.wav')
+            and os.path.getsize(os.path.join(tmp_dir, f)) > 1024
+        ]
+        if cached and bg_mode in ('separate', 'separate_api'):
+            base_track = cached[0]
+            logger.info('背景处理：复用上次分离结果 %s', os.path.basename(base_track))
+
+        if base_track is None and bg_mode == 'separate_api':
+            instrumental = separate_instrumental_via_api(
+                orig_wav, tmp_dir,
+                str(config.get('TTS_DUB_SEPARATION_API_URL') or ''),
+                str(config.get('TTS_DUB_SEPARATION_API_KEY') or ''),
+                str(config.get('TTS_DUB_SEPARATION_API_MODEL') or 'demucs'),
+                ffmpeg, logger,
+            )
+            if instrumental and os.path.isfile(instrumental):
+                base_track = instrumental
+                logger.info('背景处理：云端分离模式（instrumental，去原声）')
+            else:
+                logger.warning('云端分离失败，回退本地分离')
+                bg_mode = 'separate'
+
+        if base_track is None and bg_mode == 'separate':
             instrumental = separate_instrumental(
                 orig_wav, tmp_dir, str(config.get('TTS_DUB_SEPARATION_MODEL') or _DEFAULT_SEPARATION_MODEL), logger,
             )
             if instrumental and os.path.isfile(instrumental):
                 base_track = instrumental
-                logger.info('背景处理：分离模式（instrumental）')
+                logger.info('背景处理：本地分离模式（instrumental）')
             else:
                 bg_mode = 'duck'
 
@@ -837,7 +989,7 @@ def build_dubbed_audio(
         if not mapped:
             warnings.append('语音段映射无结果，保留原音频')
             return None, warnings, None
-        # 4e. 逐段切出并定位
+        # 4e. 逐段切出并定位（拉伸填满映射窗口，消除音画空档、保证连续对得上）
         overlays: List[str] = []
         placed_count = 0
         for i, ms in enumerate(mapped, 1):
@@ -846,8 +998,13 @@ def build_dubbed_audio(
                 continue
             seg_audio = os.path.join(tmp_dir, f'seg_{i:03d}.wav')
             cut_audio_range(script_wav, ms['src_start'], src_len, seg_audio, ffmpeg, logger)
+            # 把该段拉伸/减速到填满 [video_start, video_end]，使旁白连续覆盖视频时间轴
+            window_dur = ms['video_end'] - ms['video_start']
+            speed = (src_len / window_dur) if window_dur > 0 else 1.0
+            fitted_path = os.path.join(tmp_dir, f'seg_{i:03d}_fitted.wav')
+            fit_audio_speed(seg_audio, speed, fitted_path, ffmpeg, logger)
             placed_path = os.path.join(tmp_dir, f'seg_{i:03d}_placed.wav')
-            place_audio_at(seg_audio, ms['video_start'], placed_path, ffmpeg, logger)
+            place_audio_at(fitted_path, ms['video_start'], placed_path, ffmpeg, logger)
             overlays.append(placed_path)
             placed_count += 1
 

@@ -151,6 +151,42 @@ class AlignedSubtitleTests(unittest.TestCase):
             # 应恰好 2 段（空文本被丢弃）
             self.assertEqual(content.count('-->'), 2)
 
+    def test_write_aligned_dub_subtitle_splits_long_text(self):
+        import os
+        import tempfile
+        from modules.tts_dub import write_aligned_dub_subtitle
+
+        long_text = '这是一个非常长的句子用来测试字幕切分是否会把整段文本切成若干可读的短块且不可能堆叠在一起。'
+        mapped = [{'video_start': 0.0, 'video_end': 40.0,
+                   'src_start': 0.0, 'src_end': 25.0,  # 真正朗读 25s
+                   'text': long_text}]
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, 'split.srt')
+            write_aligned_dub_subtitle(mapped, out)
+            with open(out, encoding='utf-8') as fh:
+                content = fh.read()
+            # 长文本应被切成多条，且每条字数受限
+            cues = [b.strip() for b in content.split('\n\n') if b.strip()]
+            self.assertGreater(len(cues), 1)
+            for cue in cues:
+                lines_cue = cue.split('\n')
+                if len(lines_cue) >= 2:
+                    self.assertLessEqual(len(lines_cue[-1]), 20)
+            # 总时长落在朗读窗口 0~25 内，不超出
+            self.assertIn('00:00:00,000 -->', content)
+            self.assertNotIn('00:00:25,001', content)
+
+    def test_split_narration_respects_max(self):
+        from modules.tts_dub import _split_narration_into_cues
+        # 无标点长句也会被硬切，每块不超 max_chars
+        chunks = _split_narration_into_cues('一二三四五六七八九十' * 5, max_chars=9)
+        for c in chunks:
+            self.assertLessEqual(len(c), 9)
+        self.assertGreater(len(chunks), 1)
+        # 空文本返回空列表
+        self.assertEqual(_split_narration_into_cues('   '), [])
+        self.assertEqual(_split_narration_into_cues(''), [])
+
     def test_write_aligned_dub_subtitle_empty_returns_none(self):
         from modules.tts_dub import write_aligned_dub_subtitle
         self.assertIsNone(write_aligned_dub_subtitle([], '/tmp/nonexist/out.srt'))
