@@ -215,7 +215,7 @@ const SECTIONS: SectionDef[] = [
     icon: 'bi-film',
     desc: '字幕烧录的硬件/CPU 编码与 FFmpeg',
     fields: [
-      { key: 'VIDEO_ENCODER', label: '编码器', type: 'select', options: [{ value: 'auto', label: '自动检测' }, { value: 'cpu', label: 'CPU (H.264)' }, { value: 'nvidia', label: 'NVIDIA (HEVC)' }, { value: 'intel', label: 'Intel (HEVC)' }, { value: 'amd', label: 'AMD (HEVC)' }] },
+      { key: 'VIDEO_ENCODER', label: '编码器', type: 'select', options: [{ value: 'auto', label: '自动检测' }, { value: 'cpu', label: 'CPU (H.264)' }, { value: 'nvidia', label: 'NVIDIA (HEVC)' }, { value: 'intel', label: 'Intel (HEVC)' }, { value: 'amd', label: 'AMD (HEVC)' }, { value: 'vaapi', label: 'VAAPI (Intel核显/AMD，硬件)' }] },
       { key: 'VIDEO_CPU_PRESET', label: 'CPU 常规预设', type: 'select', options: ['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow'].map((v) => ({ value: v, label: v })) },
       { key: 'VIDEO_CPU_PRESET_HD', label: 'CPU 高清预设', type: 'select', options: ['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow'].map((v) => ({ value: v, label: v })), hint: '1440p+ 且超 10 分钟时使用' },
       { key: 'VIDEO_CUSTOM_PARAMS_ENABLED', label: '启用自定义编码参数', type: 'toggle' },

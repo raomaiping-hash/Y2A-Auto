@@ -156,7 +156,7 @@ DEFAULT_CONFIG = {
     "MAX_CONCURRENT_UPLOADS": 1,  # 最大并发上传数
     "STUCK_TASK_CHECK_INTERVAL_SECONDS": 300,  # 自动扫描并恢复卡住任务的时间间隔（秒）
     # 视频转码相关（硬编默认输出 HEVC/H.265，CPU 保持 H.264）
-    "VIDEO_ENCODER": "auto",  # auto/cpu/nvidia/intel/amd - 自动检测或指定编码器
+    "VIDEO_ENCODER": "auto",  # auto/cpu/nvidia/intel/amd/vaapi - 自动检测或指定编码器；vaapi=固定Intel/AMD VAAPI硬件编码
     "VIDEO_CPU_PRESET": _VIDEO_CPU_PRESET_DEFAULT,  # 常规 CPU/libx264 转码 preset
     "VIDEO_CPU_PRESET_HD": _VIDEO_CPU_PRESET_HD_DEFAULT,  # 1440p+ 且超过 10 分钟时使用
     "VIDEO_CUSTOM_PARAMS_ENABLED": False,  # 是否启用自定义转码参数
@@ -322,7 +322,7 @@ def load_config():
 
                 # 验证视频编码器配置是否合法
                 encoder_value = str(config.get('VIDEO_ENCODER', 'auto')).lower().strip()
-                valid_encoders = ('auto', 'cpu', 'nvidia', 'intel', 'amd')
+                valid_encoders = ('auto', 'cpu', 'nvidia', 'intel', 'amd', 'vaapi')
                 encoder_changed = False
                 if encoder_value not in valid_encoders:
                     logger.warning(f"检测到无效的视频编码器配置 {encoder_value}，已自动回退为 auto")
@@ -462,9 +462,9 @@ def update_config(new_config):
                 if str(new_config[key]).strip(): # Only update password if a new one is provided
                     current_config[key] = new_config[key]
             elif key == 'VIDEO_ENCODER':
-                # 支持硬件编码：auto/cpu/nvidia/intel/amd
+                # 支持硬件编码：auto/cpu/nvidia/intel/amd/vaapi
                 encoder_value = str(new_config[key]).lower().strip()
-                valid_encoders = ('auto', 'cpu', 'nvidia', 'intel', 'amd')
+                valid_encoders = ('auto', 'cpu', 'nvidia', 'intel', 'amd', 'vaapi')
                 if encoder_value in valid_encoders:
                     current_config[key] = encoder_value
                 else:

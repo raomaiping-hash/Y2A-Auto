@@ -6887,8 +6887,24 @@ class TaskProcessor:
                             '-tag:v', 'hvc1'
                         ]
 
+                def build_vaapi_params():
+                    """生成 VAAPI HEVC 编码参数（固定使用 VAAPI 硬件编码）。"""
+                    if custom_video_params:
+                        return list(custom_video_params)
+                    return [
+                        '-vaapi_device', '/dev/dri/renderD128',
+                        '-c:v', 'hevc_vaapi',
+                        '-qp', str(target_quality_int),
+                        '-vsync', 'cfr',
+                        '-profile:v', 'main',
+                        '-g', str(gop_hevc),
+                        '-tag:v', 'hvc1'
+                    ]
+
                 def is_vaapi_encoder() -> bool:
                     """检查当前是否使用 VAAPI 编码器（需要特殊的滤镜链处理）"""
+                    if actual_encoder == 'vaapi':
+                        return True
                     return actual_encoder == 'amd' and _detect_amd_backend() == 'vaapi'
 
                 # 确定使用的编码器
@@ -6945,6 +6961,14 @@ class TaskProcessor:
                     if not _detect_amd():
                         task_logger.warning("配置使用 AMD HEVC 编码但未检测到 AMF/VAAPI，回退到自动检测")
                         actual_encoder = _get_best_encoder()
+                elif encoder_pref == 'vaapi':
+                    # 显式固定使用 VAAPI 硬件编码（适合 Intel 核显/AMD VAAPI，不依赖自动探测）
+                    if _detect_hw_encoder('hevc_vaapi'):
+                        actual_encoder = 'vaapi'
+                        task_logger.info("配置使用 VAAPI HEVC 硬件编码")
+                    else:
+                        task_logger.warning("配置使用 VAAPI 但 ffmpeg 不支持 hevc_vaapi，回退到自动检测")
+                        actual_encoder = _get_best_encoder()
 
                 # 根据编码器生成参数
                 if actual_encoder == 'nvidia':
@@ -6953,6 +6977,9 @@ class TaskProcessor:
                 elif actual_encoder == 'intel':
                     vparams = build_intel_params()
                     task_logger.info("使用 Intel QSV HEVC 硬件编码")
+                elif actual_encoder == 'vaapi':
+                    vparams = build_vaapi_params()
+                    task_logger.info("使用 VAAPI HEVC 硬件编码")
                 elif actual_encoder == 'amd':
                     amd_backend = _detect_amd_backend()
                     if amd_backend == 'none':
