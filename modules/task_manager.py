@@ -6240,7 +6240,7 @@ class TaskProcessor:
                 pass
 
         original_srt = str(task.get('subtitle_path_original') or '').strip()
-        dubbed_audio, warnings = build_dubbed_audio(
+        dubbed_audio, warnings, aligned_srt = build_dubbed_audio(
             task_dir,
             video_path,
             subtitle_path,
@@ -6274,6 +6274,22 @@ class TaskProcessor:
                     task_logger.warning("未找到可作为配音输入的基础视频，保留原音频")
                     _restore_status_if_still_dubbing()
                     return True
+            # 画面字幕一致性：若流水线生成了"画面字幕=旁白"的对齐字幕，烧录到干净画面，
+            # 使成片看到的字幕与配音旁白完全对得上（否则烧录的是逐句翻译字幕，与整段旁白不一致）。
+            if aligned_srt and os.path.isfile(aligned_srt):
+                base_clean = os.path.join(task_dir, 'video.mp4')
+                if os.path.isfile(base_clean):
+                    try:
+                        burned = self._embed_subtitle_in_video(task_id, base_clean, aligned_srt, task_logger)
+                        if burned and os.path.isfile(burned):
+                            mux_input = burned
+                            task_logger.info("已烧录对齐旁白字幕（画面字幕=旁白）: %s", burned)
+                        else:
+                            task_logger.warning("对齐旁白字幕烧录失败，沿用现有画面字幕")
+                    except Exception as exc:  # noqa: BLE001
+                        task_logger.warning("对齐旁白字幕烧录异常，沿用现有画面字幕: %s", str(exc)[:160])
+                else:
+                    task_logger.warning("无干净基础视频（video.mp4），跳过对齐旁白字幕烧录")
             mux_dubbed_video(mux_input, dubbed_audio, out_mp4, ffmpeg_bin, task_logger)
             if not os.path.isfile(out_mp4):
                 task_logger.warning("配音视频封装失败，保留原音频")
@@ -6347,6 +6363,9 @@ class TaskProcessor:
         try:
             for name in os.listdir(task_dir):
                 if not isinstance(name, str) or not name.lower().endswith('.srt'):
+                    continue
+                # 跳过流水线生成的对齐旁白字幕（它是配音产物，不是配音文本来源，避免自指）
+                if 'dub-aligned' in name.lower():
                     continue
                 full = os.path.join(task_dir, name)
                 if os.path.isfile(full):

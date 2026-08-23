@@ -116,5 +116,50 @@ class FishAudioClientTests(unittest.TestCase):
                 self.client.synthesize('文本')
 
 
+class AlignedSubtitleTests(unittest.TestCase):
+    def test_fmt_srt_ts_standard(self):
+        from modules.tts_dub import _fmt_srt_ts
+        self.assertEqual(_fmt_srt_ts(0.0), '00:00:00,000')
+        self.assertEqual(_fmt_srt_ts(14.8), '00:00:14,800')
+        self.assertEqual(_fmt_srt_ts(350.8), '00:05:50,800')
+        self.assertEqual(_fmt_srt_ts(3661.5), '01:01:01,500')
+
+    def test_fmt_srt_ts_never_negative(self):
+        from modules.tts_dub import _fmt_srt_ts
+        self.assertEqual(_fmt_srt_ts(-3.2), '00:00:00,000')
+
+    def test_write_aligned_dub_subtitle_writes_mapped(self):
+        import os
+        import tempfile
+        from modules.tts_dub import write_aligned_dub_subtitle
+
+        mapped = [
+            {'video_start': 0.0, 'video_end': 14.8, 'text': '第一段旁白。'},
+            {'video_start': 14.81, 'video_end': 29.4, 'text': '第二段旁白。'},
+            {'video_start': 0.0, 'video_end': 1.0, 'text': ''},  # 空文本段应被丢弃
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, 'aligned.srt')
+            result = write_aligned_dub_subtitle(mapped, out)
+            self.assertEqual(result, out)
+            with open(out, encoding='utf-8') as fh:
+                content = fh.read()
+            self.assertIn('00:00:00,000 --> 00:00:14,800', content)
+            self.assertIn('00:00:14,810 --> 00:00:29,400', content)
+            self.assertIn('第一段旁白。', content)
+            self.assertNotIn('空文本段', content)
+            # 应恰好 2 段（空文本被丢弃）
+            self.assertEqual(content.count('-->'), 2)
+
+    def test_write_aligned_dub_subtitle_empty_returns_none(self):
+        from modules.tts_dub import write_aligned_dub_subtitle
+        self.assertIsNone(write_aligned_dub_subtitle([], '/tmp/nonexist/out.srt'))
+        self.assertIsNone(
+            write_aligned_dub_subtitle(
+                [{'video_start': 0, 'video_end': 1, 'text': '  '}], '/tmp/nonexist/out.srt',
+            )
+        )
+
+
 if __name__ == '__main__':
     unittest.main()

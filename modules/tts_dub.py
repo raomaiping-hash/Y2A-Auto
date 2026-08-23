@@ -617,6 +617,38 @@ def _map_segments_to_video(
     return out
 
 
+def _fmt_srt_ts(seconds: float) -> str:
+    """把秒数格式化为规范 SRT 时间戳 HH:MM:SS,mmm（避免浮点时间戳导致 libass 无法烧录）。"""
+    if seconds < 0:
+        seconds = 0.0
+    ms = int(round(seconds * 1000))
+    h, rem = divmod(ms, 3600000)
+    m, rem = divmod(rem, 60000)
+    s, ms = divmod(rem, 1000)
+    return f'{h:02d}:{m:02d}:{s:02d},{ms:03d}'
+
+
+def write_aligned_dub_subtitle(mapped: List[Dict[str, Any]], out_srt: str) -> Optional[str]:
+    """把映射到视频时间轴上的旁白段写成可见字幕 srt，使画面字幕 = 旁白（对得上）。
+    每段文字即该段旁白原文，时间轴来自 _map_segments_to_video 的 video_start/video_end。
+    返回输出路径；无有效段时返回 None。
+    """
+    segs = [m for m in mapped if str(m.get('text') or '').strip()]
+    if not segs:
+        return None
+    lines: List[str] = []
+    for i, ms in enumerate(segs, 1):
+        lines.append(str(i))
+        lines.append(f"{_fmt_srt_ts(float(ms['video_start']))} --> {_fmt_srt_ts(float(ms['video_end']))}")
+        lines.append(str(ms['text']).strip())
+        lines.append('')
+    content = '\n'.join(lines).strip() + '\n'
+    os.makedirs(os.path.dirname(out_srt), exist_ok=True)
+    with open(out_srt, 'w', encoding='utf-8') as fh:
+        fh.write(content)
+    return out_srt
+
+
 def build_dubbed_audio(
     task_dir: str,
     video_path: str,
@@ -624,25 +656,25 @@ def build_dubbed_audio(
     original_srt_path: Optional[str],
     config: Dict[str, Any],
     logger: logging.Logger,
-) -> Tuple[Optional[str], List[str]]:
-    """执行配音全流程，返回 (合成音轨 wav 路径 | None, 警告列表)。"""
+) -> Tuple[Optional[str], List[str], Optional[str]]:
+    """执行配音全流程，返回 (合成音轨 wav 路径 | None, 警告列表, 对齐旁白字幕 srt 路径 | None)。"""
     warnings: List[str] = []
     enabled = bool(config.get('TTS_DUB_ENABLED', False))
     api_key = str(config.get('TTS_DUB_API_KEY') or '').strip()
     if not enabled or not api_key:
         warnings.append('TTS 配音未启用或未配置 API Key，跳过')
-        return None, warnings
+        return None, warnings, None
 
     try:
         ffmpeg = _ffmpeg_path(logger)
         ffprobe = _ffprobe_path(ffmpeg, logger)
     except TtsDubError as exc:
         warnings.append(str(exc))
-        return None, warnings
+        return None, warnings, None
 
     if not os.path.isfile(translated_srt_path) or not os.path.isfile(video_path):
         warnings.append('翻译字幕或视频文件缺失，跳过配音')
-        return None, warnings
+        return None, warnings, None
 
     try:
         engine = SrtTransformEngine(SrtTransformConfig(), logger=logger)
@@ -650,12 +682,12 @@ def build_dubbed_audio(
             cues = engine.parse_srt(fh.read())
     except Exception as exc:
         warnings.append(f'解析翻译字幕失败: {exc}')
-        return None, warnings
+        return None, warnings, None
 
     usable_cues = [c for c in cues if len(str(c.get('text') or '').strip()) >= 2]
     if not usable_cues:
         warnings.append('翻译字幕无可用 cue，跳过配音')
-        return None, warnings
+        return None, warnings, None
 
     original_cues: List[Dict[str, Any]] = []
     if original_srt_path and os.path.isfile(original_srt_path):
@@ -774,7 +806,7 @@ def build_dubbed_audio(
         script = _rewrite_script([str(c.get('text') or '') for c in usable_cues], config, logger)
         if not script:
             warnings.append('LLM 重写整段文案失败，保留原音频')
-            return None, warnings
+            return None, warnings, None
         # 4b. 一次合成整段语音
         raw = client.synthesize(
             script, reference_id=reference_id, reference_audio=reference_audio,
@@ -789,9 +821,22 @@ def build_dubbed_audio(
         segs = _transcribe_segments(script_wav, config, logger, tmp_dir)
         if not segs:
             warnings.append('STT 反推无段落，保留原音频')
-            return None, warnings
+            return None, warnings, None
         # 4d. 映射到视频时间轴
         mapped = _map_segments_to_video(segs, script_dur, original_cues, total_duration, logger)
+        # 4d2. 把映射结果写成"画面字幕=旁白"的对齐字幕 srt（供上层烧录，保证字幕对得上语音）
+        aligned_srt = None
+        try:
+            aligned_srt = write_aligned_dub_subtitle(
+                mapped, os.path.join(task_dir, 'video.zh-Hans.dub-aligned.srt'),
+            )
+            if aligned_srt:
+                logger.info('对齐旁白字幕已生成: %s', aligned_srt)
+        except Exception as exc:
+            logger.warning('对齐旁白字幕生成失败: %s', str(exc)[:160])
+        if not mapped:
+            warnings.append('语音段映射无结果，保留原音频')
+            return None, warnings, None
         # 4e. 逐段切出并定位
         overlays: List[str] = []
         placed_count = 0
@@ -808,7 +853,7 @@ def build_dubbed_audio(
 
         if not overlays:
             warnings.append('全部语音段放置失败，保留原音频')
-            return None, warnings
+            return None, warnings, None
 
         # 5. 混合
         logger.info('混合 %d 段整段旁白（共 %d 段）', placed_count, len(mapped))
@@ -817,13 +862,13 @@ def build_dubbed_audio(
             base_track, overlays, mixed_wav, ffmpeg, logger,
             float(config.get('TTS_DUB_CUE_GAIN') or 2.0),
         )
-        return mixed_wav, warnings
+        return mixed_wav, warnings, aligned_srt
     except TtsDubError as exc:
         warnings.append(str(exc))
-        return None, warnings
+        return None, warnings, None
     except Exception as exc:  # noqa: BLE001 - 兜底不阻塞主流程
         warnings.append(f'配音流程异常: {str(exc)[:200]}')
-        return None, warnings
+        return None, warnings, None
     finally:
         # 保留 tmp_dub 目录里的最终产物，供上层做 mux；清理可由任务文件删除逻辑兜底
         pass
