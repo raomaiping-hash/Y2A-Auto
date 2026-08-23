@@ -177,10 +177,48 @@ def _format_bilibili_exception(exc: Exception) -> str:
     return message or "未知错误"
 
 
+def _extract_response_body_message(exc: Exception) -> str:
+    """从异常或响应对象中提取 B 站返回的业务提示（如“上传过快”）。"""
+    parts = []
+    raw = getattr(exc, "raw", None)
+    if isinstance(raw, dict):
+        parts.append(str(raw.get("message") or ""))
+        parts.append(str(raw.get("info") or ""))
+    elif isinstance(raw, (bytes, bytearray)):
+        try:
+            data = json.loads(raw.decode("utf-8", errors="replace"))
+            if isinstance(data, dict):
+                parts.append(str(data.get("message") or ""))
+                parts.append(str(data.get("info") or ""))
+        except Exception:
+            pass
+    text = _compact_exception_text(str(exc))
+    for marker in ("上传视频过快", "上传过快", "请稍作休息", "休息后再继续"):
+        if marker in text:
+            parts.append(marker)
+            break
+    return " ".join(p for p in parts if p).strip()
+
+
 def _is_bilibili_http_406(exc: Exception) -> bool:
     code = _extract_response_code_from_exception(exc)
     text = _compact_exception_text(str(exc))
-    return code == 406 or "状态码：406" in text or "status code: 406" in text.lower()
+    is_406 = code == 406 or "状态码：406" in text or "status code: 406" in text.lower()
+    if not is_406:
+        return False
+    # 区分“上传过快”限流与单纯的指纹/风控
+    body_msg = _extract_response_body_message(exc)
+    return "过快" not in body_msg and "稍作休息" not in body_msg and "休息后再" not in body_msg
+
+
+def _is_bilibili_rate_limited(exc: Exception) -> bool:
+    code = _extract_response_code_from_exception(exc)
+    text = _compact_exception_text(str(exc))
+    is_406 = code == 406 or "状态码：406" in text or "status code: 406" in text.lower()
+    if not is_406:
+        return False
+    body_msg = _extract_response_body_message(exc)
+    return "过快" in body_msg or "稍作休息" in body_msg or "休息后再" in body_msg
 
 
 def _bilibili_406_hint() -> str:
@@ -188,6 +226,13 @@ def _bilibili_406_hint() -> str:
         "bilibili上传被 preupload 接口返回 406 拒绝。"
         "这通常是 B 站风控导致，可能与 Cookie/buvid 状态、服务器 IP 环境或网络指纹有关。"
         "已启用 curl_cffi 浏览器指纹伪装；如仍失败，请重新扫码登录或更换网络环境后重试。"
+    )
+
+
+def _bilibili_rate_limit_hint() -> str:
+    return (
+        "B 站提示“上传视频过快”，已触发上传限流（账号/IP 需要冷却）。"
+        "请等待一段时间（建议 5~30 分钟）后再重新上传，避免高频重试触发更长的限流。"
     )
 
 
@@ -455,11 +500,18 @@ class BilibiliUploader:
             )
         except ResponseCodeException as e:
             pretty_error = _format_bilibili_exception(e)
-            if _is_bilibili_http_406(e):
+            if _is_bilibili_rate_limited(e):
+                pretty_error = _bilibili_rate_limit_hint()
+            elif _is_bilibili_http_406(e):
                 pretty_error = _bilibili_406_hint()
             self.log(f"bilibili上传异常: {pretty_error}")
             return False, f"bilibili上传异常: {pretty_error}"
         except Exception as e:
+            if _is_bilibili_rate_limited(e):
+                hint = _bilibili_rate_limit_hint()
+                self.log(f"bilibili上传异常: {hint}")
+                self.log(traceback.format_exc())
+                return False, f"bilibili上传异常: {hint}"
             if _is_bilibili_http_406(e):
                 hint = _bilibili_406_hint()
                 self.log(f"bilibili上传异常: {hint}")

@@ -164,11 +164,14 @@ class BilibiliUploaderDiagnosticTests(unittest.TestCase):
         function_names = {
             "_extract_response_code_from_exception",
             "_compact_exception_text",
+            "_extract_response_body_message",
             "_is_bilibili_http_406",
+            "_is_bilibili_rate_limited",
             "_bilibili_406_hint",
+            "_bilibili_rate_limit_hint",
         }
         selected = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in function_names]
-        namespace = {"re": re, "Optional": Optional}
+        namespace = {"re": re, "Optional": Optional, "json": json}
         exec(compile(ast.Module(body=selected, type_ignores=[]), str(module_path), "exec"), namespace)
         cls.helpers = namespace
 
