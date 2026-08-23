@@ -151,6 +151,7 @@ DEFAULT_CONFIG = {
     "SUBTITLE_GLOSSARY_ENABLED": False,  # 术语表提取：翻译前抽取主题摘要 + 统一术语译法（一次 LLM 调用）
     "SUBTITLE_TRANSLATE_REFLECT_ENABLED": False,  # 两阶段翻译：忠实直译 -> 自然意译（双倍 LLM 调用，慢网关慎开）
     "SUBTITLE_CUE_MAX_CHARS": 22,  # 单条字幕最大字数：超过按短句拆成多条，时间按字数比例分配
+    "SUBTITLE_MERGE_MIN_DURATION_S": 0,  # 字幕最短时长合并阈值（秒）；0=禁用合并。>0 时把过短字幕合并到相邻句（纯字幕阅读场景），配音场景必须为 0 否则大段长字幕+配音错位
     # 配音（Fish Audio TTS）
     "DUBBING_ENABLED": False,  # 配音总开关（任务级可覆盖）
     "DUBBING_VOICE_ID": "fbe02f8306fc4d3d915e9871722a39d5",  # 默认预置音色

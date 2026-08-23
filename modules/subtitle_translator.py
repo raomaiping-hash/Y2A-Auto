@@ -148,6 +148,9 @@ class TranslationConfig:
     glossary_enabled: bool = False         # 术语表提取：翻译前先抽取统一译法
     reflect_translate: bool = False        # 两阶段翻译：忠实直译 -> 自然意译（双倍 LLM 调用）
     cue_max_chars: int = 22                # 单条字幕最大字数：超过按短句拆分多条（时间按字数比例分配）
+    min_subtitle_duration: float = 0.0     # 字幕最短时长合并阈值（秒）；0=禁用合并。
+                                           # 配音场景必须为 0：配音逐句对齐，合并会导致"大段长字幕"
+                                           # 且与配音时间轴错位。仅纯字幕阅读场景才需要 >0。
 
 class SubtitleReader:
     """字幕文件读取器"""
@@ -1622,7 +1625,8 @@ class SubtitleTranslator:
             max_chars = int(getattr(self.config, 'cue_max_chars', 22) or 22)
             cues = SubtitleWriter._prepare_cues(items, translated=True, max_chars=max_chars)
             # 时长-文本对齐：超过"可接受变速上限"的句子在文本端修剪缩短（参考 VideoLingo）
-            cues = self._trim_overlong_cues(cues)
+            # 注意：min_subtitle_duration 合并仅在配置 >0 时启用；配音场景保持 0 避免大段长字幕。
+            cues = self._trim_overlong_cues(cues, min_subtitle_duration=getattr(self.config, 'min_subtitle_duration', 0.0))
             # 最终去结巴（对齐/合并/修剪可能引入重叠重复，最后清理一遍）
             for cue in cues:
                 t = str(cue.get('text') or '').strip()
@@ -1643,17 +1647,22 @@ class SubtitleTranslator:
             self.logger.error(f"写入翻译文件失败: {e}")
             return False
 
-    def _trim_overlong_cues(self, cues: List[Dict[str, Any]], speed_cap: float = 1.2) -> List[Dict[str, Any]]:
+    def _trim_overlong_cues(self, cues: List[Dict[str, Any]], speed_cap: float = 1.2, min_subtitle_duration: float = 0.0) -> List[Dict[str, Any]]:
         """字幕-时长对齐（套用 VideoLingo：min_subtitle_duration + merge_rows + check_len_then_trim）：
-        0. 先做 min_subtitle_duration=2.5：过短字幕合并到相邻或强制延长，消除"极短窗读不完"；
-        1. 再合并物理超窗句到相邻，放大窗口；
+        0. 若 min_subtitle_duration > 0，先做过短字幕合并/延长（消除"极短窗读不完"）；
+           配音场景传 0 跳过——否则会把相邻短句拼成"大段长字幕"且与配音错位；
+        1. 再合并物理超窗句到相邻，放大窗口（min_subtitle_duration==0 时禁用合并，
+           超窗直接 LLM 修剪当前句，避免拼成大段）；
         2. 合并后仍超窗的用 LLM 修剪文本缩短；
         变速只做轻微适配(speed_cap=accept=1.2, 上限 max=1.4)，避免超快/对不上/急促。
         """
         if not cues:
             return cues
-        # 过短字幕(<2.5s)合并或延长，避免极短窗塞不下
-        cues = self._enforce_min_subtitle_duration(cues, min_dur=2.5)
+        # 过短字幕(<min_subtitle_duration)合并或延长；阈值 0 时跳过（配音场景默认）
+        if min_subtitle_duration and min_subtitle_duration > 0:
+            cues = self._enforce_min_subtitle_duration(cues, min_dur=min_subtitle_duration)
+        # 是否允许"合并后续句放大窗口"：仅非配音（min>0）场景；配音场景只修剪不合并
+        allow_merge = bool(min_subtitle_duration and min_subtitle_duration > 0)
 
         def _win(c):
             try:
@@ -1673,6 +1682,15 @@ class SubtitleTranslator:
                 i += 1
                 continue
             if est <= win * speed_cap:
+                out.append(cur)
+                i += 1
+                continue
+            if not allow_merge:
+                # 配音场景：不合并后续句，直接 LLM 修剪当前句到窗口可读长度
+                trimmed = self._llm_trim_text(text, win)
+                if trimmed:
+                    cur['text'] = trimmed
+                    self.logger.info("字幕-时长对齐: 配音场景修剪 %.1fs 窗口句 %d字->%d字", win, len(text), len(trimmed))
                 out.append(cur)
                 i += 1
                 continue
@@ -1863,6 +1881,8 @@ def create_translator_from_config(app_config: Dict, task_id: Optional[str] = Non
             glossary_enabled=_to_bool(app_config.get('SUBTITLE_GLOSSARY_ENABLED', False)),
             reflect_translate=_to_bool(app_config.get('SUBTITLE_TRANSLATE_REFLECT_ENABLED', False)),
             cue_max_chars=int(app_config.get('SUBTITLE_CUE_MAX_CHARS', 22) or 22),
+            # 配音/短字幕场景默认禁用"短句合并"（0=不合并，避免大段长字幕）
+            min_subtitle_duration=float(app_config.get('SUBTITLE_MERGE_MIN_DURATION_S', 0) or 0),
         )
         
         if not translation_config.api_key:
