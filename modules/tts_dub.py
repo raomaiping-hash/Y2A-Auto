@@ -474,21 +474,30 @@ def ensure_reference_model(
     except Exception:
         cache = {}
 
-    try:
-        resp = requests.post(
-            f'{base_url.rstrip("/")}/model',
-            headers={'Authorization': f'Bearer {api_key}'},
-            data={
-                'type': 'tts',
-                'title': f'{title} {time.strftime("%m%d%H%M")}',
-                'train_mode': 'fast',
-                'visibility': 'private',
-            },
-            files={'voices': ('reference.mp3', sample_bytes, 'audio/mpeg')},
-            timeout=120,
-        )
-    except Exception as exc:  # 网络/SSL 异常直接降级默认音色，不中止配音
-        logger.warning('克隆声音模型请求失败，使用默认音色: %s', type(exc).__name__)
+    resp = None
+    last_err = ''
+    for attempt in range(1, 4):  # 网络/SSL 波动重试，成功才克隆，避免音色丢失
+        try:
+            resp = requests.post(
+                f'{base_url.rstrip("/")}/model',
+                headers={'Authorization': f'Bearer {api_key}'},
+                data={
+                    'type': 'tts',
+                    'title': f'{title} {time.strftime("%m%d%H%M")}',
+                    'train_mode': 'fast',
+                    'visibility': 'private',
+                },
+                files={'voices': ('reference.mp3', sample_bytes, 'audio/mpeg')},
+                timeout=120,
+            )
+            break
+        except Exception as exc:
+            last_err = f'{type(exc).__name__}: {str(exc)[:100]}'
+            logger.warning('克隆声音模型请求失败(第%d/3次): %s', attempt, last_err)
+            if attempt < 3:
+                time.sleep(2)
+    if resp is None:
+        logger.warning('克隆声音模型多次失败，使用默认音色: %s', last_err)
         return None
     if resp.status_code != 201:
         logger.warning('创建克隆声音模型失败 HTTP %s: %s', resp.status_code, resp.text[:160])

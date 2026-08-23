@@ -340,6 +340,19 @@ class SubtitleWriter:
         return text.strip()
 
     @staticmethod
+    def _dedupe_stutter(text: str) -> str:
+        """去除翻译结巴：连续重复的短语(>=2字)去重为一次，如"它也可能它也可能"->"它也可能"。"""
+        import re
+        if not text:
+            return text
+        # 连续重复的 2+ 字子串去重为一次（保守，只处理明显结巴）
+        prev = None
+        while prev != text:
+            prev = text
+            text = re.sub(r'([\u4e00-\u9fff]{2,}?)\1+', r'\1', text)
+        return text
+
+    @staticmethod
     def _remove_cjk_spaces(text: str) -> str:
         """删除 CJK 字符之间的空格（中文无需词间空格，如 'a b' -> 'ab'）。
 
@@ -503,8 +516,8 @@ class SubtitleWriter:
                 segs = SubtitleWriter._split_long_cue(base, max_chars)
             else:
                 segs = [str(text or '').strip()]
-            # 3) 删除 CJK 间空格
-            segs = [SubtitleWriter._remove_cjk_spaces(s) for s in segs]
+            # 3) 删除 CJK 间空格 + 去结巴重复
+            segs = [SubtitleWriter._dedupe_stutter(SubtitleWriter._remove_cjk_spaces(s)) for s in segs]
             t0 = SubtitleWriter._ts_to_seconds(item.start_time)
             t1 = SubtitleWriter._ts_to_seconds(item.end_time)
             total_chars = sum(len(s) for s in segs) or 1
@@ -1567,6 +1580,11 @@ class SubtitleTranslator:
             cues = SubtitleWriter._prepare_cues(items, translated=True, max_chars=max_chars)
             # 时长-文本对齐：超过"可接受变速上限"的句子在文本端修剪缩短（参考 VideoLingo）
             cues = self._trim_overlong_cues(cues)
+            # 最终去结巴（对齐/合并/修剪可能引入重叠重复，最后清理一遍）
+            for cue in cues:
+                t = str(cue.get('text') or '').strip()
+                if t:
+                    cue['text'] = SubtitleWriter._dedupe_stutter(t)
             if output_ext == '.srt':
                 self.writer.write_cues_srt(cues, output_path)
             elif output_ext == '.vtt':
