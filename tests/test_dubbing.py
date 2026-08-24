@@ -80,9 +80,8 @@ class AlignTests(unittest.TestCase):
 class AssemblyCmdTests(unittest.TestCase):
     """验证合成命令结构（不实际跑 ffmpeg）。"""
 
-    def test_concat_uses_absolute_timeline(self):
-        """回归：拼接必须用绝对 start_ms（字幕时间轴），第一条不从 0 开始也要补静音，
-        否则配音与烧录字幕错位。"""
+    def test_concat_uses_absolute_timeline_and_trims(self):
+        """回归：拼接用绝对时间轴 + atrim 窗口钳制，短不叠加、不从 0 也要补静音。"""
         captured = {}
 
         def fake_run(cmd, **kwargs):
@@ -90,7 +89,7 @@ class AssemblyCmdTests(unittest.TestCase):
             return _FakeProc()
 
         seg1 = dubbing.DubSegment(index=0, text='首句', start_ms=3000, end_ms=5000,
-                                  wav_path='/tmp/a.wav', duration_s=2.0)
+                                  wav_path='/tmp/a.wav', duration_s=3.0)
         seg2 = dubbing.DubSegment(index=1, text='次句', start_ms=5000, end_ms=8000,
                                   wav_path='/tmp/b.wav', duration_s=3.0)
         with patch('modules.dubbing.subprocess.run', side_effect=fake_run), \
@@ -98,11 +97,29 @@ class AssemblyCmdTests(unittest.TestCase):
             dubbing._concat_wav_segments([seg1, seg2], '/tmp/out.wav', None)
 
         fc = ' '.join(captured['cmd'])
-        # 绝对时间轴：第一条 adelay=3000（不是 0），第二条 adelay=5000
-        self.assertIn('[0:a]adelay=3000|3000', fc)
-        self.assertIn('[1:a]adelay=5000|5000', fc)
-        # 不允许出现相对偏移（3000-3000=0）
-        self.assertNotIn('[0:a]adelay=0|0', fc)
+        # 每段都 atrim 到其窗口时长（seg1 窗口 2s, seg2 窗口 3s）
+        self.assertIn('atrim=0:2.000', fc)
+        self.assertIn('atrim=0:3.000', fc)
+        # 绝对时间轴 adelay
+        self.assertIn('adelay=3000|3000', fc)
+        self.assertIn('adelay=5000|5000', fc)
+
+    def test_concat_trims_overlong_segment(self):
+        """回归：超窗片段（加速后仍长于窗口）必须被截断，防侵入下一句叠加。"""
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured['cmd'] = cmd
+            return _FakeProc()
+
+        # seg1 实际 5s 但窗口只有 2s（模拟加速后仍超窗）——atrim 需截断到 2s
+        seg1 = dubbing.DubSegment(index=0, text='long', start_ms=3000, end_ms=5000,
+                                  wav_path='/tmp/a.wav', duration_s=5.0)
+        with patch('modules.dubbing.subprocess.run', side_effect=fake_run), \
+             patch('modules.dubbing.get_ffmpeg_path', return_value='ffmpeg'):
+            dubbing._concat_wav_segments([seg1], '/tmp/out.wav', None)
+        fc = ' '.join(captured['cmd'])
+        self.assertIn('atrim=0:2.000', fc)
 
     def test_concat_single_segment_pads_leading_silence(self):
         """单片段且起始时间非 0：也要补前导静音保证绝对时间轴。"""
@@ -117,7 +134,9 @@ class AssemblyCmdTests(unittest.TestCase):
         with patch('modules.dubbing.subprocess.run', side_effect=fake_run), \
              patch('modules.dubbing.get_ffmpeg_path', return_value='ffmpeg'):
             dubbing._concat_wav_segments([seg], '/tmp/out.wav', None)
-        self.assertIn('adelay=4000|4000', ' '.join(captured['cmd']))
+        fc = ' '.join(captured['cmd'])
+        self.assertIn('atrim=0:2.000', fc)
+        self.assertIn('adelay=4000|4000', fc)
 
     def test_assemble_cmd_no_bgm_no_subtitle(self):
         cfg = {'VIDEO_ENCODER': 'cpu', 'VIDEO_CPU_PRESET': 'fast'}

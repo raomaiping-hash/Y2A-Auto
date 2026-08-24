@@ -15,6 +15,7 @@
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -103,6 +104,100 @@ def _ms_to_ts(ms: int) -> str:
     return f'{h:02d}:{m:02d}:{s:02d},{ms2:03d}'
 
 
+_CN_DIGITS = '零一二三四五六七八九'
+_CN_UNITS = ['', '十', '百', '千']
+_CN_BIG_UNITS = ['', '万', '亿', '万亿']
+
+
+def _int_to_cn(n: int) -> str:
+    """整数转中文（简体口语）：10000→一万，11→十一，123→一百二十三，10001→一万零一。"""
+    if n == 0:
+        return '零'
+    if n < 0:
+        return '负' + _int_to_cn(-n)
+    # 每 4 位一组
+    groups = []
+    while n > 0:
+        groups.append(n % 10000)
+        n //= 10000
+
+    def _small(g: int) -> str:
+        """0-9999 转中文，正确处理中间零。"""
+        if g == 0:
+            return '零'
+        s = ''
+        for pos in range(3, -1, -1):
+            d = (g // (10 ** pos)) % 10
+            if d == 0:
+                # 低位为 0 且前面已有内容，且后面还有有效位时才补零
+                if s and s[-1] != '零':
+                    # 判断是否有更低的有效位
+                    if (g % (10 ** pos)) != 0:
+                        s += '零'
+                continue
+            s += _CN_DIGITS[d] + _CN_UNITS[pos]
+        # 口语：10~19 的数字（如 10→十，11→十一）省略开头"一十"的"一"
+        if g >= 10 and s.startswith('一十') and (g // 10) == 1:
+            s = s[1:]
+        return s
+
+    out = ''
+    for gi in range(len(groups) - 1, -1, -1):
+        g = groups[gi]
+        if g == 0:
+            # 非最高组为 0：若后面组有内容，需在已输出的高位后补一个"零"
+            if out and not out.endswith('零'):
+                # 判断低组是否全为 0（整万/整亿不补零）
+                if any(x != 0 for x in groups[:gi]):
+                    out += '零'
+            continue
+        out += _small(g) + _CN_BIG_UNITS[gi]
+    return out
+
+
+def _num_to_cn(text: str) -> str:
+    """把阿拉伯数字/百分比转成中文朗读形式，让 Fish 读准、且字幕与配音一致。
+
+    - 整数：10000→一万，25→二十五，11→十一（口语不读"一十一"）
+    - 百分比：11% → 百分之十一
+    - 带单位的数字转汉字
+    """
+    import re
+    text = str(text or '')
+
+    # 百分比：先处理 N% / N％（口语：十一%→百分之十一）
+    def _pct(m):
+        return '百分之' + _int_to_cn(int(m.group(1)))
+    text = re.sub(r'(\d+)%', _pct, text)
+    text = re.sub(r'(\d+)\s*％', _pct, text)
+
+    # 纯整数（含千分位逗号）；11 转"十一"而非"一十一"
+    def _int(m):
+        raw = m.group(0).replace(',', '').replace('，', '')
+        try:
+            val = int(raw)
+            cn = _int_to_cn(val)
+            # 口语化：10~19 直接用"十X"，21+ 的"一十一"→"十一"
+            if val >= 10 and cn.startswith('一十'):
+                cn = cn[1:]
+            return cn
+        except Exception:
+            return m.group(0)
+    text = re.sub(r'(?<![\d.])[\d,，]{1,15}(?![\d.])', _int, text)
+    return text
+
+
+def _normalize_dub_text(text: str) -> str:
+    """配音文本规范化：数字→中文汉字、去除多余空格、规范常见符号。
+
+    保证 Fish TTS 朗读准确，且与烧录的中文字幕内容一致。
+    """
+    text = _num_to_cn(text)
+    # 去 CJK 间多余空格
+    text = re.sub(r'(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])', '', text)
+    return text.strip()
+
+
 def _probe_wav_duration(wav_path: str, logger=None) -> float:
     """用 ffprobe 取音频时长（秒）。"""
     ffprobe = get_ffprobe_path()
@@ -163,7 +258,7 @@ def dub_srt_to_audio(
 
     total = len(cues)
     for idx, cue in enumerate(cues):
-        text = cue['text']
+        text = _normalize_dub_text(cue['text'])  # 数字→中文汉字，朗读更准且与字幕一致
         seg = DubSegment(
             index=idx,
             text=text,
@@ -212,38 +307,31 @@ def dub_srt_to_audio(
 def _concat_wav_segments(segments: List[DubSegment], output_wav: str, logger) -> None:
     """按时间顺序把片段拼接为完整 wav（片段间按字幕时间插入静音）。
 
-    关键：adelay 使用**绝对时间轴**（start_ms 即视频时间），保证配音与
-    烧录的字幕（同为绝对时间轴）逐句对齐。若第一条字幕不从 0 开始，
-    开头自动补静音。
+    关键：
+      - 每段从**绝对时间轴** start_ms 开始（与烧录字幕一致）。
+      - 每段用 atrim 截断到其字幕窗口末尾（end_ms），**绝不侵入下一段**，
+        从根本上消除"加速后仍超窗 → 与下句 amix 叠加 → 回声/重影"。
+      - 过短片段自然靠 amix 与后续静音衔接。
     """
-    if len(segments) == 1:
-        # 单片段也要保证从绝对时间轴开始（补前导静音）
-        only = segments[0]
-        if only.start_ms <= 0:
-            shutil.copy2(only.wav_path, output_wav)
-            return
-        ffmpeg = get_ffmpeg_path(logger=logger)
-        if not ffmpeg:
-            shutil.copy2(only.wav_path, output_wav)
-            return
-        cmd = [ffmpeg, '-y', '-i', only.wav_path,
-               '-filter_complex', f'[0:a]adelay={only.start_ms}|{only.start_ms}[out]',
-               '-map', '[out]', '-ac', '2', '-ar', '44100', output_wav]
-        subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-        return
     ffmpeg = get_ffmpeg_path(logger=logger)
     if not ffmpeg:
         raise RuntimeError('FFmpeg 不可用，无法合并配音')
 
-    # 用 filter_complex 精确控制每段时间
+    # 预处理：单片段也走统一路径，用 atrim+adelay 保证窗口钳制与前导静音。
     inputs = []
     for s in segments:
         inputs += ['-i', s.wav_path]
-    # 计算每段的开始偏移：绝对时间轴（视频时间），与烧录字幕一致
+
     filter_parts = []
     for i, s in enumerate(segments):
         offset_ms = max(0, s.start_ms)
-        filter_parts.append(f'[{i}:a]adelay={offset_ms}|{offset_ms}[a{i}]')
+        window_s = max(0.1, (s.end_ms - s.start_ms) / 1000.0)
+        # atrim 截断到窗口时长，再 adelay 到绝对时间轴，最后统一混音
+        filter_parts.append(
+            f'[{i}:a]atrim=0:{window_s:.3f},'
+            f'asetpts=PTS-STARTPTS,'
+            f'adelay={offset_ms}|{offset_ms}[a{i}]'
+        )
     n = len(segments)
     mix = ''.join(f'[a{i}]' for i in range(n)) + f'amix=inputs={n}:duration=longest:normalize=0[out]'
     cmd = [ffmpeg, '-y'] + inputs + [
