@@ -135,3 +135,122 @@ export interface TaskStreamEvent {
   task?: Task
   [key: string]: unknown
 }
+
+/* ---- 任务详情 / 分区 ---- */
+export interface PartitionEntry {
+  name: string
+  id: string
+  description?: string
+}
+
+export interface PartitionGroup {
+  category: string
+  partitions: (PartitionEntry & { sub_partitions?: PartitionEntry[] })[]
+}
+
+export interface TaskDetail extends Task {
+  tags_list?: string[]
+  cover_preview?: boolean
+  cover_filename?: string
+  has_original_cover_backup?: boolean
+  is_custom_cover_active?: boolean
+  missing_partitions?: string[]
+}
+
+export interface TaskDetailPayload {
+  success: boolean
+  task: TaskDetail
+  acfun_partition_mapping?: PartitionGroup[]
+  bilibili_partition_mapping?: PartitionGroup[]
+}
+
+export interface TaskUpdatePayload {
+  success: boolean
+  message?: string
+  task?: TaskDetail
+}
+
+/* ---- 监控 ---- */
+export interface MonitorHistoryStats {
+  total_records: number
+  added_to_tasks: number
+  avg_views: number
+  avg_likes: number
+}
+
+export interface MonitorHistoryPayload {
+  success: boolean
+  history: Record<string, unknown>[]
+  config: Record<string, unknown> | null
+  stats: MonitorHistoryStats
+}
+
+export interface MonitorStatusPayload {
+  success: boolean
+  configs: MonitorConfig[]
+  history: Record<string, unknown>[]
+}
+
+export interface MonitorConfigPayload {
+  success: boolean
+  config: MonitorConfig
+}
+
+export interface MonitorRunPayload {
+  success: boolean
+  message?: string
+  operation_id?: string
+  config_id?: number
+}
+
+export interface MonitorRunStatusPayload {
+  found: boolean
+  config_id?: number | null
+  message: string
+  detail: string
+  done: boolean
+  level: string
+  success: boolean | null
+  percent?: number | null
+}
+
+/* ---- 设置 ---- */
+export interface TgBotTokenPayload {
+  success: boolean
+  message?: string
+  token?: string
+  state?: Record<string, unknown>
+}
+
+export interface SettingsSaveProgressEntry {
+  category: string
+  text: string
+}
+
+export interface SettingsSaveProgressPayload {
+  found: boolean
+  message: string
+  detail: string
+  percent: number | null
+  done: boolean
+  success: boolean
+  messages: SettingsSaveProgressEntry[]
+}
+
+export interface SettingsSavePayload {
+  success: boolean
+  message?: string
+  operation_id?: string
+  csrf_token?: string
+}
+
+export interface SettingsPayload {
+  success?: boolean
+  config: Record<string, unknown>
+  whisper_languages?: string[]
+  acfun_partition_mapping?: Record<string, unknown>
+  bilibili_partition_mapping?: Record<string, unknown>
+  builtin_prompts?: Record<string, unknown>
+  tgbot_token_state?: Record<string, unknown>
+  csrf_token?: string
+}

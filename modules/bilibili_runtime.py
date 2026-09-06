@@ -12,10 +12,14 @@ _LAST_ERROR: Optional[str] = None
 
 
 def configure_bilibili_runtime() -> bool:
-    """Configure the internal Bilibili SDK network runtime once per process."""
+    """Configure the internal Bilibili SDK network runtime.
+
+    不锁“仅初始化一次”：每次调用都从环境变量重新读取并应用请求设置，
+    这样保存设置（更新 BILIBILI_DIRECT_CONNECT / BILIBILI_IMPERSONATE 等）后
+    无需重启进程即可热生效。request_settings.set() 本身幂等且会惰性刷新已建会话，
+    因此重复调用开销极低。
+    """
     global _INITIALIZED, _LAST_ERROR
-    if _INITIALIZED:
-        return True
 
     try:
         from .bili_sdk import request_settings
@@ -31,7 +35,14 @@ def configure_bilibili_runtime() -> bool:
         use_direct = os.environ.get("BILIBILI_DIRECT_CONNECT", "1").strip().lower()
         if use_direct not in ("0", "false", "off", "no", ""):
             request_settings.set("trust_env", False)
-            logger.info("Bilibili 上传已启用本机直连（忽略环境代理，trust_env=False）")
+            if not _INITIALIZED:
+                logger.info("Bilibili 上传已启用本机直连（忽略环境代理，trust_env=False）")
+        else:
+            # 关闭直连时显式恢复走代理，覆盖此前开启直连留下的 trust_env=False，
+            # 使“保存设置后”热更新真正生效。
+            request_settings.set("trust_env", True)
+            if not _INITIALIZED:
+                logger.info("Bilibili 上传未启用本机直连（信任环境代理，trust_env=True）")
 
         _INITIALIZED = True
         _LAST_ERROR = None

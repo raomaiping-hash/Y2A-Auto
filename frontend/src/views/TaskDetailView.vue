@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { tasksApi } from '@/api/endpoints'
 import { useToastStore } from '@/stores/toast'
 import { ApiError } from '@/api/client'
-import type { Task } from '@/api/types'
+import type { PartitionGroup, TaskDetail } from '@/api/types'
 import { targetLabel, formatDbTime } from '@/composables/taskMeta'
 import TaskStatusBadge from '@/components/ui/TaskStatusBadge.vue'
 import UiConfirm from '@/components/ui/UiConfirm.vue'
@@ -13,25 +13,12 @@ import UiEmpty from '@/components/ui/UiEmpty.vue'
 import UiToggle from '@/components/ui/UiToggle.vue'
 import CopyButton from '@/components/ui/CopyButton.vue'
 
-interface PartitionEntry { name: string; id: string; description?: string }
-interface PartitionGroup { category: string; partitions: (PartitionEntry & { sub_partitions?: PartitionEntry[] })[] }
-interface TaskDetailResponse extends Task {
-  tags_list?: string[]
-  cover_preview?: boolean
-  cover_filename?: string
-  has_original_cover_backup?: boolean
-  is_custom_cover_active?: boolean
-  missing_partitions?: string[]
-  acfun_partition_mapping?: PartitionGroup[]
-  bilibili_partition_mapping?: PartitionGroup[]
-}
-
 const route = useRoute()
 const router = useRouter()
 const toast = useToastStore()
 
 const taskId = computed(() => String(route.params.taskId))
-const task = ref<TaskDetailResponse | null>(null)
+const task = ref<TaskDetail | null>(null)
 const loading = ref(true)
 const loadError = ref('')
 
@@ -56,7 +43,7 @@ async function load() {
   loading.value = true
   loadError.value = ''
   try {
-    const res = (await tasksApi.get(taskId.value)) as unknown as { task: TaskDetailResponse; acfun_partition_mapping?: PartitionGroup[]; bilibili_partition_mapping?: PartitionGroup[] }
+    const res = await tasksApi.get(taskId.value)
     task.value = res.task
     acfunMapping.value = res.acfun_partition_mapping ?? []
     bilibiliMapping.value = res.bilibili_partition_mapping ?? []
@@ -84,14 +71,14 @@ async function save(forceUpload = false) {
   if (!task.value || saving.value) return
   saving.value = true
   try {
-    const res = (await tasksApi.update(taskId.value, {
+    const res = await tasksApi.update(taskId.value, {
       video_title_translated: title.value,
       description_translated: description.value,
       tags: tagsText.value,
       selected_partition_id_acfun: partitionAcfun.value,
       selected_partition_id_bilibili: partitionBilibili.value,
       force_upload: forceUpload,
-    })) as unknown as { success: boolean; message?: string; task?: TaskDetailResponse }
+    })
     toast.success(res.message || '任务已保存')
     if (res.task) task.value = res.task
     dirty.value = false

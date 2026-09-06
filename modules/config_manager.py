@@ -86,6 +86,12 @@ DEFAULT_CONFIG = {
     "ACFUN_USERNAME": "",
     "ACFUN_PASSWORD": "",
     "UPLOAD_TARGET_DEFAULT": "acfun",  # 任务默认投稿平台：acfun|bilibili|both
+    # 平台投稿元数据限制（单一来源；_get_effective_metadata_limits 与各上传器共用）。
+    # 默认值与 B 站/站A 投稿接口实测阈值一致（B 站保守取 800 防边界）。
+    "METADATA_TITLE_LIMIT_ACFUN": 50,
+    "METADATA_DESCRIPTION_LIMIT_ACFUN": 1000,
+    "METADATA_TITLE_LIMIT_BILIBILI": 80,
+    "METADATA_DESCRIPTION_LIMIT_BILIBILI": 800,
     "OPENAI_API_KEY": "",
     "OPENAI_BASE_URL": "https://api.openai.com/v1",
     "OPENAI_MODEL_NAME": "gpt-3.5-turbo",

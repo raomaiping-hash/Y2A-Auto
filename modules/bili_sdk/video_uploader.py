@@ -112,6 +112,16 @@ async def _choose_line(line: Lines) -> dict:
     return await _probe()
 
 
+def _pick_etag(headers: dict) -> str:
+    """从分块 PUT 响应头中读取真实 ETag，兼容 etag/Etag/ETag 等大小写变体。"""
+    if not isinstance(headers, dict):
+        return ""
+    for key, value in headers.items():
+        if str(key).lower() == "etag":
+            return str(value or "").strip()
+    return ""
+
+
 class VideoUploaderPage:
     """
     分 P 对象
@@ -1054,6 +1064,9 @@ class VideoUploader(AsyncEvent):
         except (TypeError, ValueError):
             threads = 1
 
+        # 按分块号收集每个分块的真实 ETag，供 _complete_page 的 parts.eTag 使用。
+        etags_by_chunk: dict = {}
+
         while chunks_pending:
             tasks = []
 
@@ -1072,7 +1085,7 @@ class VideoUploader(AsyncEvent):
                 )
 
             try:
-                await asyncio.gather(*tasks)
+                chunk_results = await asyncio.gather(*tasks)
             except BaseException:
                 for task in tasks:
                     if not task.done():
@@ -1080,7 +1093,17 @@ class VideoUploader(AsyncEvent):
                 await asyncio.gather(*tasks, return_exceptions=True)
                 raise
 
-        data = await self._complete_page(page, total_chunk_count, preupload, upload_id)
+            for chunk_result in chunk_results:
+                if isinstance(chunk_result, dict):
+                    etag = chunk_result.get("etag") or ""
+                    if etag:
+                        etags_by_chunk[chunk_result.get("chunk_number")] = etag
+
+        # 按分块号升序组成有序列表，缺失的用空串（_complete_page 会回退到 "etag"）。
+        etags = [etags_by_chunk.get(i, "") for i in range(total_chunk_count)]
+        data = await self._complete_page(
+            page, total_chunk_count, preupload, upload_id, etags=etags
+        )
 
         self.dispatch(VideoUploaderEvents.AFTER_PAGE.value, {"page": page})
 
@@ -1158,6 +1181,7 @@ class VideoUploader(AsyncEvent):
             "chunk_number": chunk_number,
             "offset": offset,
             "page": page,
+            "etag": "",
         }
 
         max_attempts = 3
@@ -1187,6 +1211,10 @@ class VideoUploader(AsyncEvent):
                 data = resp.utf8_text()
                 if data != "MULTIPART_PUT_SUCCESS" and data != "":
                     raise ApiException("分块上传响应异常")
+
+                # 读取分块响应头里的真实 ETag（不强制要求存在，缺失时回退到 "etag"），
+                # 供 _complete_page 的 parts.eTag 使用，兼容大小写变体。
+                ok_return["etag"] = _pick_etag(getattr(resp, "headers", {}) or {})
 
                 self.dispatch(
                     VideoUploaderEvents.AFTER_CHUNK.value,
@@ -1219,7 +1247,12 @@ class VideoUploader(AsyncEvent):
         raise ApiException("分块上传重试耗尽")
 
     async def _complete_page(
-        self, page: VideoUploaderPage, chunks: int, preupload: dict, upload_id: str
+        self,
+        page: VideoUploaderPage,
+        chunks: int,
+        preupload: dict,
+        upload_id: str,
+        etags: Optional[list] = None,
     ) -> dict:
         """
         提交分 P 上传
@@ -1233,16 +1266,23 @@ class VideoUploader(AsyncEvent):
 
             upload_id (str): upload_id
 
+            etags (list, optional): 每个分块的真实 ETag 列表（按分块号升序），
+                缺失项回退到 "etag"，兼容服务端不返回 ETag 头的情况。
+
         Returns:
             dict: filename: 该分 P 的标识符，用于最后提交视频。cid: 分 P 的 cid
         """
         self.dispatch(VideoUploaderEvents.PRE_PAGE_SUBMIT.value, {"page": page})
 
-        data = {
-            "parts": list(
-                map(lambda x: {"partNumber": x, "eTag": "etag"}, range(1, chunks + 1))
-            )
-        }
+        # parts.eTag 需与每个分块 PUT 响应头里的真实 ETag 一致，硬编码 "etag"
+        # 会让 B 站认为分块校验失败。这里按分块号读取真实值，缺失时回退旧值。
+        parts = []
+        for part_number in range(1, chunks + 1):
+            etag = ""
+            if etags and part_number - 1 < len(etags):
+                etag = etags[part_number - 1]
+            parts.append({"partNumber": part_number, "eTag": etag or "etag"})
+        data = {"parts": parts}
 
         params = {
             "output": "json",

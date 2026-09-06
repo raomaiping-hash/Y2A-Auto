@@ -151,6 +151,8 @@ class TranslationConfig:
     min_subtitle_duration: float = 0.0     # 字幕最短时长合并阈值（秒）；0=禁用合并。
                                            # 配音场景必须为 0：配音逐句对齐，合并会导致"大段长字幕"
                                            # 且与配音时间轴错位。仅纯字幕阅读场景才需要 >0。
+    dubbing_mode: bool = False             # 配音任务标记：强制 min_subtitle_duration=0，且字幕保留
+                                           # 原始时间轴（不按字数重排），保证配音与烧录同一时序。
 
 class SubtitleReader:
     """字幕文件读取器"""
@@ -497,29 +499,21 @@ class SubtitleWriter:
 
     @staticmethod
     def _wrap_to_max_lines(text: str, max_chars: int = 21, max_lines: int = 2) -> str:
-        """把长文本按自然断点折行，限制行数与每行字数（字幕短行显示更佳）。"""
-        if not text or len(text) <= max_chars * max_lines:
-            return text
-        words = str(text).split()
-        lines: List[str] = []
-        current = ''
-        for word in words:
-            candidate = (current + ' ' + word).strip()
-            if len(current) and len(candidate) > max_chars:
-                lines.append(current)
-                current = word
-            else:
-                current = candidate
-        if current:
-            lines.append(current)
-        if len(lines) > max_lines:
-            lines = lines[:max_lines]
-            lines[-1] = lines[-1][:max_chars].rstrip() + '…'
-        return '\n'.join(lines)
+        """兼容入口：委托 ``bilingual_subtitles._wrap_text_by_pixels`` 的像素折行规范。
+
+        旧实现（按字数限宽并截断加省略号）与双语/单语烧录的折行职责混叠，已废弃。
+        此处保持函数签名兼容，统一走像素折行，避免长字幕在烧录画面溢出或折行不一致。
+        """
+        from .bilingual_subtitles import _wrap_text_by_pixels
+        # 用 max_chars 近似字号预算，委托像素折行；返回值中的 ASS 换行符换回 SRT 换行。
+        return _wrap_text_by_pixels(
+            str(text or ''), font_size=max(12, int(max_chars or 21)),
+            video_width=1920, margin_lr=60, max_lines=max_lines,
+        ).replace('\\N', '\n')
 
     @staticmethod
     def _clean_subtitle_text(text: str) -> str:
-        """翻译文本的最终清洗：去标点 + 折行限宽。"""
+        """翻译文本的最终清洗：去标点 + 委托像素折行限宽（见 _wrap_to_max_lines）。"""
         return SubtitleWriter._wrap_to_max_lines(SubtitleWriter._strip_terminal_full_stop(text))
 
     @staticmethod
@@ -550,11 +544,23 @@ class SubtitleWriter:
         return out
 
     @staticmethod
-    def _prepare_cues(items: List[SubtitleItem], translated: bool, max_chars: int) -> List[dict]:
-        """清洗 + 拆分 + 去 CJK 空格 + 时间按字数比例分配 + 相邻去重。"""
+    def _prepare_cues(items: List[SubtitleItem], translated: bool, max_chars: int, preserve_timeline: bool = False) -> List[dict]:
+        """清洗 + 拆分 + 去 CJK 空格 + 时间按字数比例分配 + 相邻去重。
+
+        preserve_timeline=True 用于配音场景：保留原始时间轴，不拆条、不按字数重排时间，
+        使配音文本与烧录字幕共用同一时序（避免"拆完又被 align 的 atrim 硬切"导致错位）。
+        """
         out: List[dict] = []
         for item in items:
             text = item.translated_text if translated and item.translated_text else item.source_text
+            if preserve_timeline:
+                # 配音场景：保留原窗口；LLM 换行短句合并为一句，交给 TTS 一次性朗读。
+                base = SubtitleWriter._strip_terminal_full_stop(text)
+                base = re.sub(r'\n+', ' ', base).strip()
+                base = SubtitleWriter._dedupe_stutter(SubtitleWriter._remove_cjk_spaces(base))
+                if base:
+                    out.append({'start': item.start_time, 'end': item.end_time, 'text': base})
+                continue
             if translated:
                 # 1) 去标点（标点替换为空格，保留短句边界）
                 base = SubtitleWriter._strip_terminal_full_stop(text)
@@ -1623,10 +1629,19 @@ class SubtitleTranslator:
         try:
             output_ext = Path(output_path).suffix.lower()
             max_chars = int(getattr(self.config, 'cue_max_chars', 22) or 22)
-            cues = SubtitleWriter._prepare_cues(items, translated=True, max_chars=max_chars)
+            dubbing_mode = bool(getattr(self.config, 'dubbing_mode', False))
+            # 配音场景：保留原始时间轴（不拆条重排），且代码层强制 min_subtitle_duration=0，
+            # 不依赖用户配置（用户为阅读场景设置 >0 时，翻译阶段不会合并短句，避免大段长字幕）。
+            cues = SubtitleWriter._prepare_cues(
+                items, translated=True, max_chars=max_chars,
+                preserve_timeline=dubbing_mode,
+            )
             # 时长-文本对齐：超过"可接受变速上限"的句子在文本端修剪缩短（参考 VideoLingo）
             # 注意：min_subtitle_duration 合并仅在配置 >0 时启用；配音场景保持 0 避免大段长字幕。
-            cues = self._trim_overlong_cues(cues, min_subtitle_duration=getattr(self.config, 'min_subtitle_duration', 0.0))
+            min_dur = getattr(self.config, 'min_subtitle_duration', 0.0)
+            if dubbing_mode:
+                min_dur = 0.0
+            cues = self._trim_overlong_cues(cues, min_subtitle_duration=min_dur)
             # 最终去结巴（对齐/合并/修剪可能引入重叠重复，最后清理一遍）
             for cue in cues:
                 t = str(cue.get('text') or '').strip()
@@ -1883,6 +1898,9 @@ def create_translator_from_config(app_config: Dict, task_id: Optional[str] = Non
             cue_max_chars=int(app_config.get('SUBTITLE_CUE_MAX_CHARS', 22) or 22),
             # 配音/短字幕场景默认禁用"短句合并"（0=不合并，避免大段长字幕）
             min_subtitle_duration=float(app_config.get('SUBTITLE_MERGE_MIN_DURATION_S', 0) or 0),
+            # 配音任务标记：代码层强制 min_subtitle_duration=0 且字幕保留原始时间轴，
+            # 不依赖用户为阅读场景设置的合并阈值。
+            dubbing_mode=_to_bool(app_config.get('DUBBING_ENABLED', False)),
         )
         
         if not translation_config.api_key:

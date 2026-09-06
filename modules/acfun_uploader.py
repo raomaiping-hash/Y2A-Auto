@@ -11,8 +11,6 @@ import ssl
 from hashlib import sha1
 from math import ceil
 from logging.handlers import RotatingFileHandler
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 from typing import Optional, List, Union, Tuple
 from .utils import get_app_subdir
 
@@ -20,6 +18,18 @@ from modules.utils import process_cover
 
 ACFUN_TITLE_LIMIT = 50
 ACFUN_DESCRIPTION_LIMIT = 1000
+
+
+def make_acfun_session() -> requests.Session:
+    """创建 AcFun 请求会话：本机直连（trust_env=False）。
+
+    与 B 站上传的 trust_env=False 语义保持一致，避免继承环境代理
+    （HTTPS_PROXY/HTTP_PROXY 等）导致出口与 B 站/YouTube 不一致而发生代理串扰。
+    如需走代理，应显式配置 session.proxies。
+    """
+    session = requests.Session()
+    session.trust_env = False
+    return session
 
 
 def setup_task_logger(task_id):
@@ -109,7 +119,7 @@ class AcfunUploader:
         self.username = acfun_username
         self.password = acfun_password
         self.cookie_file = cookie_file or "cookies/ac_cookies.json"
-        self.session = requests.Session()
+        self.session = make_acfun_session()
         self.logger = None  # 需要在上传时设置
         
         # 设置通用请求头
@@ -268,10 +278,11 @@ class AcfunUploader:
             "https://member.acfun.cn",
             "https://upload.kuaishouzt.com"
         ]
-        
+
+        session = make_acfun_session()
         for url in test_urls:
             try:
-                response = requests.get(url, timeout=10)
+                response = session.get(url, timeout=10)
                 if response.status_code == 200:
                     self.log(f"网络连接正常: {url}")
                 else:
@@ -280,7 +291,7 @@ class AcfunUploader:
             except Exception as e:
                 self.log(f"网络连接失败: {url} ({e})")
                 return False
-        
+
         return True
     
     def test_login(self) -> bool:
@@ -377,20 +388,9 @@ class AcfunUploader:
     
     def upload_chunk(self, block: bytes, fragment_id: int, upload_token: str, cancel_event=None) -> bool:
         """上传分块"""
-        # 创建专用的上传session
-        upload_session = requests.Session()
-        
-        # 配置重试策略
-        retry_strategy = Retry(
-            total=3,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
-        )
-        
-        # 配置适配器
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        upload_session.mount("http://", adapter)
-        upload_session.mount("https://", adapter)
+        # 创建专用的上传session，本机直连（trust_env=False），与 B 站语义一致。
+        # 仅保留下方显式 for-循环重试，避免 HTTPAdapter 自动重试与之叠加放大请求数。
+        upload_session = make_acfun_session()
         
         # 设置请求头
         headers = {
@@ -454,22 +454,16 @@ class AcfunUploader:
         
         return False
     
-    def complete_upload(self, fragment_count: int, upload_token: str, cancel_event=None):
-        """完成上传"""
-        # 创建专用的上传session
-        upload_session = requests.Session()
-        
-        # 配置重试策略
-        retry_strategy = Retry(
-            total=3,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
-        )
-        
-        # 配置适配器
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        upload_session.mount("http://", adapter)
-        upload_session.mount("https://", adapter)
+    def complete_upload(self, fragment_count: int, upload_token: str, cancel_event=None) -> bool:
+        """完成上传。
+
+        Returns:
+            bool: True 表示上传完成确认成功；False 表示失败（调用方应据此将该平台
+                记为失败，而非静默地生成残缺投稿）。
+        """
+        # 创建专用的上传session，本机直连（trust_env=False），与 B 站语义一致。
+        # 仅保留下方显式 for-循环重试，避免 HTTPAdapter 自动重试与之叠加放大请求数。
+        upload_session = make_acfun_session()
         
         headers = {
             "Content-Length": "0",
@@ -481,7 +475,7 @@ class AcfunUploader:
         for attempt in range(3):
             try:
                 if cancel_event is not None and cancel_event.is_set():
-                    return
+                    return False
                 if attempt > 0:
                     time.sleep(2 ** attempt)
                 
@@ -500,7 +494,7 @@ class AcfunUploader:
                     result = response.json()
                     if result.get("result") == 1:
                         self.log("上传完成确认成功")
-                        return
+                        return True
                     else:
                         self.log(f"完成上传失败: {result}")
                 else:
@@ -510,6 +504,8 @@ class AcfunUploader:
                 self.log(f"完成上传出错，重试第 {attempt + 1} 次: {e}")
                 if attempt == 2:
                     self.log("完成上传失败，但文件可能已上传成功")
+
+        return False
     
     def upload_finish(self, task_id: int, cancel_event=None):
         """上传完成处理"""
@@ -634,7 +630,8 @@ class AcfunUploader:
             chunk_data = f.read()
 
         self.upload_chunk(chunk_data, 0, token, cancel_event=cancel_event)
-        self.complete_upload(1, token, cancel_event=cancel_event)
+        if not self.complete_upload(1, token, cancel_event=cancel_event):
+            raise RuntimeError("封面上传完成确认失败，请重试")
 
         # 获取上传后的URL
         response = self.session.post(
@@ -719,7 +716,8 @@ class AcfunUploader:
         # 完成上传
         if cancel_event is not None and cancel_event.is_set():
             return False, "任务已取消"
-        self.complete_upload(fragment_count, token, cancel_event=cancel_event)
+        if not self.complete_upload(fragment_count, token, cancel_event=cancel_event):
+            return False, "上传完成确认失败，请重试"
         
         # 创建视频
         if cancel_event is not None and cancel_event.is_set():

@@ -87,6 +87,9 @@ class AcfunQrLoginSession:
         self.done_payload: Optional[Dict[str, object]] = None
         self._transient_errors = 0
         self.session = requests.Session()
+        # 本机直连（trust_env=False），与 B 站上传、AcFun 上传的出口语义保持一致，
+        # 避免继承环境代理导致代理串扰。
+        self.session.trust_env = False
         self.session.headers.update(
             {
                 "User-Agent": (

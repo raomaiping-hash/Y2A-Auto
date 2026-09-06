@@ -24,7 +24,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from modules.ffmpeg_manager import get_ffmpeg_path, get_ffprobe_path
 from providers.tts.base import BaseTTSProvider, TTSProviderError
-from providers.tts.dub_cache import build_dub_cache_key, get_cached_dub_path, save_dub_cache
+from providers.tts.dub_cache import (
+    build_dub_cache_key,
+    get_cached_dub_path,
+    save_dub_cache,
+    cleanup_dub_cache,
+)
 
 # 模块级兜底 logger：调用方可传自定义 logger，未传时使用标准 logging
 _module_logger = logging.getLogger('dubbing')
@@ -151,39 +156,72 @@ def _int_to_cn(n: int) -> str:
                 if any(x != 0 for x in groups[:gi]):
                     out += '零'
             continue
+        # 组间零：本组非零但不足千（千位为 0），且前面已有更高位内容时补"零"。
+        # 例：10001 → 一万零一；90500 → 九万零五百；10010 → 一万零十。
+        if out and g < 1000:
+            out += '零'
         out += _small(g) + _CN_BIG_UNITS[gi]
     return out
 
 
+def _decimal_to_cn(num_str: str) -> str:
+    """把数字串（可含小数/负号）转成中文朗读形式。
+
+    整数部分沿用 _int_to_cn；小数部分逐位汉字化并在其间加"点"。
+    例：11.5 → 十一点五；3.14 → 三点一四；8.5 → 八点五。
+    """
+    s = str(num_str or '').strip()
+    if not s:
+        return ''
+    if s.startswith('-'):
+        return '负' + _decimal_to_cn(s[1:])
+    if '.' not in s:
+        return _int_to_cn(int(s))
+    whole, frac = s.split('.', 1)
+    whole_cn = _int_to_cn(int(whole)) if whole else '零'
+    frac_cn = ''.join(_CN_DIGITS[int(d)] for d in frac if d.isdigit())
+    return whole_cn + '点' + frac_cn
+
+
 def _num_to_cn(text: str) -> str:
-    """把阿拉伯数字/百分比转成中文朗读形式，让 Fish 读准、且字幕与配音一致。
+    """把阿拉伯数字/百分比/小数转成中文朗读形式，让 Fish 读准、且字幕与配音一致。
 
     - 整数：10000→一万，25→二十五，11→十一（口语不读"一十一"）
-    - 百分比：11% → 百分之十一
-    - 带单位的数字转汉字
+    - 百分比（支持小数/负数）：11%→百分之十一，11.5%→百分之十一点五，-12%→负百分之十二
+    - 纯小数：8.5→八点五，3.14→三点一四
     """
     import re
     text = str(text or '')
 
-    # 百分比：先处理 N% / N％（口语：十一%→百分之十一）
+    # 百分比：先处理 N% / N％（口语：十一%→百分之十一），支持小数与负号
     def _pct(m):
-        return '百分之' + _int_to_cn(int(m.group(1)))
-    text = re.sub(r'(\d+)%', _pct, text)
-    text = re.sub(r'(\d+)\s*％', _pct, text)
+        sign = '负' if m.group(1).lstrip().startswith('-') else ''
+        num = m.group(1).strip().lstrip('-').strip()
+        return sign + '百分之' + _decimal_to_cn(num)
+    text = re.sub(r'(-?\d+(?:\.\d+)?)\s*%', _pct, text)
+    text = re.sub(r'(-?\d+(?:\.\d+)?)\s*％', _pct, text)
 
-    # 纯整数（含千分位逗号）；11 转"十一"而非"一十一"
+    # 纯小数（非百分比）：8.5→八点五，3.14→三点一四
+    def _decimal(m):
+        return _decimal_to_cn(m.group(0))
+    text = re.sub(r'(?<![\d.])-?\d+\.\d+(?![\d.])', _decimal, text)
+
+    # 纯整数（含千分位逗号与可选负号）；11 转"十一"而非"一十一"
     def _int(m):
         raw = m.group(0).replace(',', '').replace('，', '')
+        neg = raw.startswith('-')
+        if neg:
+            raw = raw[1:]
         try:
             val = int(raw)
             cn = _int_to_cn(val)
             # 口语化：10~19 直接用"十X"，21+ 的"一十一"→"十一"
             if val >= 10 and cn.startswith('一十'):
                 cn = cn[1:]
-            return cn
+            return ('负' if neg else '') + cn
         except Exception:
             return m.group(0)
-    text = re.sub(r'(?<![\d.])[\d,，]{1,15}(?![\d.])', _int, text)
+    text = re.sub(r'(?<![\d.])-?[\d,，]{1,15}(?![\d.])', _int, text)
     return text
 
 
@@ -248,6 +286,12 @@ def dub_srt_to_audio(
     model = str(config.get('FISH_TTS_MODEL') or 's2.1-pro-free')
     language = str(config.get('SUBTITLE_TARGET_LANGUAGE') or 'zh')
 
+    # 配音合成入口：周期清理陈旧配音缓存，防止长期磁盘增长。
+    try:
+        cleanup_dub_cache(max_age_days=30.0, logger=logger)
+    except Exception:  # 缓存清理失败不阻断配音
+        pass
+
     cues = parse_srt_to_segments(srt_path)
     if not cues:
         logger.warning('配音：字幕为空，跳过')
@@ -267,7 +311,10 @@ def dub_srt_to_audio(
             voice=voice or '',
         )
         # 缓存优先
-        cache_key = build_dub_cache_key(text, voice or '', speed, model, language)
+        cache_key = build_dub_cache_key(
+            text, voice or '', speed, model, language,
+            provider=provider.name, output_format='wav',
+        )
         cached = get_cached_dub_path(cache_key)
         if cached:
             seg.wav_path = os.path.join(temp_dir, f'seg_{idx}.wav')
@@ -327,11 +374,15 @@ def _concat_wav_segments(segments: List[DubSegment], output_wav: str, logger) ->
         offset_ms = max(0, s.start_ms)
         window_s = max(0.1, (s.end_ms - s.start_ms) / 1000.0)
         # atrim 截断到窗口时长，再 adelay 到绝对时间轴，最后统一混音
-        filter_parts.append(
-            f'[{i}:a]atrim=0:{window_s:.3f},'
-            f'asetpts=PTS-STARTPTS,'
-            f'adelay={offset_ms}|{offset_ms}[a{i}]'
-        )
+        part = f'[{i}:a]atrim=0:{window_s:.3f},asetpts=PTS-STARTPTS'
+        # 片段实际时长超过窗口（合并/变速后仍超窗，atrim 会硬切吞词尾/语气）：
+        # 在 atrim 之后加一小段尾部淡出，作为最后兜底，柔化硬切断句。
+        if s.duration_s > window_s + 0.05:
+            fade_dur = min(0.3, max(0.05, window_s * 0.15))
+            fade_st = max(0.0, window_s - fade_dur)
+            part += f',afade=t=out:st={fade_st:.3f}:d={fade_dur:.3f}'
+        part += f',adelay={offset_ms}|{offset_ms}[a{i}]'
+        filter_parts.append(part)
     n = len(segments)
     mix = ''.join(f'[a{i}]' for i in range(n)) + f'amix=inputs={n}:duration=longest:normalize=0[out]'
     cmd = [ffmpeg, '-y'] + inputs + [

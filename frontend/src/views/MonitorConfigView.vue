@@ -103,7 +103,7 @@ function applyPreset(p: (typeof PRESETS)[number]) {
 
 async function load() {
   try {
-    const res = (await monitorApi.config(Number(configIdParam.value))) as unknown as { config: Record<string, unknown> }
+    const res = await monitorApi.config(Number(configIdParam.value))
     const cfg = res.config ?? {}
     form.name = String(cfg.name ?? '')
     form.enabled = !!cfg.enabled
@@ -375,10 +375,11 @@ async function submit() {
             <select v-model="form.schedule_type" class="select">
               <option value="manual">手动执行</option>
               <option value="interval">定时执行</option>
+              <option value="auto">自动调度</option>
             </select>
           </label>
 
-          <template v-if="form.schedule_type === 'interval'">
+          <template v-if="form.schedule_type === 'interval' || form.schedule_type === 'auto'">
             <label class="field">
               <span class="field-label">执行间隔（分钟）</span>
               <input v-model.number="form.schedule_interval" type="number" min="15" class="input" />

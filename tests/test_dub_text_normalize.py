@@ -47,5 +47,34 @@ class NumToCnTests(unittest.TestCase):
         self.assertEqual(_normalize_dub_text('举办宴会'), '举办宴会')
 
 
+class DubbingNumeralExtendTests(unittest.TestCase):
+    """数字汉字化回归：跨万/亿组零判定 + 小数/负百分比。"""
+
+    def test_cross_group_zero_after_wan(self):
+        # 低组非零但不足千，需在高位组后补零（此前误读为"一万一/九万五百"）
+        self.assertEqual(_int_to_cn(10001), '一万零一')
+        self.assertEqual(_int_to_cn(90500), '九万零五百')
+        self.assertEqual(_int_to_cn(10500), '一万零五百')
+        self.assertEqual(_int_to_cn(100000), '十万')
+
+    def test_percent_with_decimal(self):
+        # 小数百分比此前误读为"11.百分之五 / 96.百分之七"
+        self.assertEqual(_normalize_dub_text('占11.5%'), '占百分之十一点五')
+        self.assertEqual(_normalize_dub_text('96.7%'), '百分之九十六点七')
+        self.assertEqual(_normalize_dub_text('增长3.14%'), '增长百分之三点一四')
+
+    def test_negative_percent(self):
+        self.assertEqual(_normalize_dub_text('-12%'), '负百分之十二')
+        self.assertEqual(_normalize_dub_text('下降-5.5%'), '下降负百分之五点五')
+
+    def test_plain_decimal_to_chinese(self):
+        # 纯小数（非百分比）转中文：8.5折 / 3.14
+        self.assertEqual(_normalize_dub_text('打8.5折'), '打八点五折')
+        self.assertEqual(_normalize_dub_text('圆周率约3.14'), '圆周率约三点一四')
+
+    def test_decimal_full_width_percent(self):
+        self.assertEqual(_normalize_dub_text('收益6.8％'), '收益百分之六点八')
+
+
 if __name__ == '__main__':
     unittest.main()

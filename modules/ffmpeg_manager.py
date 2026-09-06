@@ -22,7 +22,7 @@ from typing import Optional
 import requests
 from shutil import which as _which
 
-from .config_manager import load_config
+from .config_manager import load_config, get_config_default
 from .utils import get_app_root_dir
 
 log = logging.getLogger(__name__)
@@ -373,7 +373,7 @@ def _resolve_ffmpeg_path(
     for candidate in _bundled_candidates('ffmpeg'):
         search_order.append(('bundled', candidate))
 
-    auto_download = config.get('FFMPEG_AUTO_DOWNLOAD', True)
+    auto_download = config.get('FFMPEG_AUTO_DOWNLOAD', get_config_default('FFMPEG_AUTO_DOWNLOAD'))
     if os.name == 'nt' and auto_download:
         downloaded = download_ffmpeg_bundled(log_obj, progress_callback=progress_callback)
         if downloaded:

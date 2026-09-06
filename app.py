@@ -1551,7 +1551,7 @@ def get_path_debug_info(file_path):
 @app.route('/system_health')
 def system_health():
     """系统健康检查 - 增强Docker环境兼容性"""
-    from modules.task_manager import get_db_connection, validate_cookies, resolve_cookie_file_path
+    from modules.task_manager import db_connect, validate_cookies, resolve_cookie_file_path
     import sqlite3
     import os
     import platform
@@ -1649,51 +1649,50 @@ def system_health():
     # 检查数据库
     try:
         logger.info("开始数据库健康检查...")
-        conn = get_db_connection()
-        
-        # 测试基本连接
-        cursor = conn.execute('SELECT COUNT(*) FROM tasks')
-        task_count = cursor.fetchone()[0]
-        
-        # 检查数据库文件权限和位置
-        db_info = get_database_info()
-        
-        health_status['database'] = {
-            'status': 'ok',
-            'message': f'数据库正常，共有 {task_count} 个任务',
-            'location': db_info['path'],
-            'size_mb': round(db_info['size'] / 1024 / 1024, 2),
-            'writable': db_info['writable']
-        }
-        
-        # 检查卡住的任务
-        stuck_cursor = conn.execute('''
-            SELECT id, status, created_at, updated_at, error_message
-            FROM tasks 
-            WHERE status IN ('processing', 'downloading', 'uploading', 'fetching_info', 'translating')
-            AND datetime(updated_at) < datetime('now', '-30 minutes')
-        ''')
-        stuck_tasks = stuck_cursor.fetchall()
-        health_status['stuck_tasks'] = {
-            'count': len(stuck_tasks),
-            'tasks': [{'id': t[0][:8] + '...', 'status': t[1], 'updated': t[3]} for t in stuck_tasks]
-        }
-        
-        # 检查最近的错误
-        error_cursor = conn.execute('''
-            SELECT id, error_message, updated_at
-            FROM tasks 
-            WHERE status = 'failed' AND error_message IS NOT NULL
-            ORDER BY updated_at DESC
-            LIMIT 5
-        ''')
-        error_tasks = error_cursor.fetchall()
-        health_status['recent_errors'] = [
-            {'id': t[0][:8] + '...', 'error': t[1][:100] + '...' if len(t[1]) > 100 else t[1], 'time': t[2]}
-            for t in error_tasks
-        ]
-        
-        conn.close()
+        # 用 db_connect 上下文管理器包裹全部 DB 访问：正常/异常路径都保证连接关闭，
+        # 修复此前 get_db_connection()+手动 close() 在异常时泄漏连接的问题。
+        with db_connect() as conn:
+            # 测试基本连接
+            cursor = conn.execute('SELECT COUNT(*) FROM tasks')
+            task_count = cursor.fetchone()[0]
+
+            # 检查数据库文件权限和位置（与计数查询共用同一连接，避免重复开连接）
+            db_info = get_database_info()
+
+            health_status['database'] = {
+                'status': 'ok',
+                'message': f'数据库正常，共有 {task_count} 个任务',
+                'location': db_info['path'],
+                'size_mb': round(db_info['size'] / 1024 / 1024, 2),
+                'writable': db_info['writable']
+            }
+
+            # 检查卡住的任务
+            stuck_cursor = conn.execute('''
+                SELECT id, status, created_at, updated_at, error_message
+                FROM tasks 
+                WHERE status IN ('processing', 'downloading', 'uploading', 'fetching_info', 'translating')
+                AND datetime(updated_at) < datetime('now', '-30 minutes')
+            ''')
+            stuck_tasks = stuck_cursor.fetchall()
+            health_status['stuck_tasks'] = {
+                'count': len(stuck_tasks),
+                'tasks': [{'id': t[0][:8] + '...', 'status': t[1], 'updated': t[3]} for t in stuck_tasks]
+            }
+
+            # 检查最近的错误
+            error_cursor = conn.execute('''
+                SELECT id, error_message, updated_at
+                FROM tasks 
+                WHERE status = 'failed' AND error_message IS NOT NULL
+                ORDER BY updated_at DESC
+                LIMIT 5
+            ''')
+            error_tasks = error_cursor.fetchall()
+            health_status['recent_errors'] = [
+                {'id': t[0][:8] + '...', 'error': t[1][:100] + '...' if len(t[1]) > 100 else t[1], 'time': t[2]}
+                for t in error_tasks
+            ]
         logger.info("数据库健康检查完成")
     except Exception:
         logger.exception("数据库健康检查失败")

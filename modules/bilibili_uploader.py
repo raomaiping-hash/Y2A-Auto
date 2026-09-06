@@ -22,6 +22,9 @@ BILIBILI_TITLE_LIMIT = 80
 # 实测 2000、1500 字均触发 21010（简介字数过长）。用保守值 800 确保长简介不被卡边界。
 BILIBILI_DESCRIPTION_LIMIT = 800
 
+# 限流判定：B 站业务码 601（上传过快）/ 6022（高频提交）出现即视为限流，
+# 文案仅作辅助；并覆盖“太快/过频”等变体，避免被误判为 406 指纹风控。
+
 
 def setup_task_logger(task_id):
     log_dir = get_app_subdir("logs")
@@ -195,7 +198,21 @@ def _extract_response_body_message(exc: Exception) -> str:
         except Exception:
             pass
     text = _compact_exception_text(str(exc))
-    for marker in ("上传视频过快", "上传过快", "请稍作休息", "休息后再继续"):
+    # 覆盖“太快/过频”等变体的宽泛识别词（内联字面量，保证 AST 抽取诊断自洽）。
+    for marker in (
+        "上传视频过快",
+        "上传过快",
+        "上传太频繁",
+        "太快",
+        "过于频繁",
+        "频率过快",
+        "频繁操作",
+        "请稍作休息",
+        "稍作休息",
+        "休息后再",
+        "限流",
+        "冷却",
+    ):
         if marker in text:
             parts.append(marker)
             break
@@ -208,9 +225,53 @@ def _is_bilibili_http_406(exc: Exception) -> bool:
     is_406 = code == 406 or "状态码：406" in text or "status code: 406" in text.lower()
     if not is_406:
         return False
-    # 区分“上传过快”限流与单纯的指纹/风控
+    # 区分“上传过快”限流与单纯的指纹/风控：优先按 body 业务码（601/6022）判定，
+    # 文案仅作辅助；覆盖“太快/过频”等变体。逻辑内联（仅依赖 json/getattr/builtins），
+    # 保证 tests/test_bilibili_runtime.py 的 AST 抽取诊断仍可执行。
+    raw = getattr(exc, "raw", None)
+    candidates = []
+    if isinstance(raw, dict):
+        candidates.append(raw)
+    elif isinstance(raw, (bytes, bytearray)):
+        try:
+            payload = json.loads(raw.decode("utf-8", errors="replace"))
+            if isinstance(payload, dict):
+                candidates.append(payload)
+        except Exception:
+            pass
+    body_code = None
+    for payload in candidates:
+        for key in ("code", "Code", "CODE"):
+            if key in payload:
+                value = payload[key]
+                if isinstance(value, int):
+                    body_code = value
+                elif isinstance(value, str) and value.isdigit():
+                    body_code = int(value)
+                if body_code is not None:
+                    break
+        if body_code is not None:
+            break
+    if body_code in (601, 6022):
+        return False
     body_msg = _extract_response_body_message(exc)
-    return "过快" not in body_msg and "稍作休息" not in body_msg and "休息后再" not in body_msg
+    for marker in (
+        "上传视频过快",
+        "上传过快",
+        "上传太频繁",
+        "太快",
+        "过于频繁",
+        "频率过快",
+        "频繁操作",
+        "请稍作休息",
+        "稍作休息",
+        "休息后再",
+        "限流",
+        "冷却",
+    ):
+        if marker in body_msg:
+            return False
+    return True
 
 
 def _is_bilibili_rate_limited(exc: Exception) -> bool:
@@ -219,8 +280,51 @@ def _is_bilibili_rate_limited(exc: Exception) -> bool:
     is_406 = code == 406 or "状态码：406" in text or "status code: 406" in text.lower()
     if not is_406:
         return False
+    # 与 _is_bilibili_http_406 相反：命中限流业务码或文案变体即为限流。
+    raw = getattr(exc, "raw", None)
+    candidates = []
+    if isinstance(raw, dict):
+        candidates.append(raw)
+    elif isinstance(raw, (bytes, bytearray)):
+        try:
+            payload = json.loads(raw.decode("utf-8", errors="replace"))
+            if isinstance(payload, dict):
+                candidates.append(payload)
+        except Exception:
+            pass
+    body_code = None
+    for payload in candidates:
+        for key in ("code", "Code", "CODE"):
+            if key in payload:
+                value = payload[key]
+                if isinstance(value, int):
+                    body_code = value
+                elif isinstance(value, str) and value.isdigit():
+                    body_code = int(value)
+                if body_code is not None:
+                    break
+        if body_code is not None:
+            break
+    if body_code in (601, 6022):
+        return True
     body_msg = _extract_response_body_message(exc)
-    return "过快" in body_msg or "稍作休息" in body_msg or "休息后再" in body_msg
+    for marker in (
+        "上传视频过快",
+        "上传过快",
+        "上传太频繁",
+        "太快",
+        "过于频繁",
+        "频率过快",
+        "频繁操作",
+        "请稍作休息",
+        "稍作休息",
+        "休息后再",
+        "限流",
+        "冷却",
+    ):
+        if marker in body_msg:
+            return True
+    return False
 
 
 def _bilibili_406_hint() -> str:

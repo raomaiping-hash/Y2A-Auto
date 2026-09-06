@@ -665,6 +665,7 @@ def task_retranslate_subtitle(task_id):
     return _ok('已启动重新翻译字幕，正在后台处理...')
 
 
+@api_bp.post('/tasks/reset_stuck')
 @api_protected
 def tasks_reset_stuck():
     from .task_manager import reset_stuck_tasks

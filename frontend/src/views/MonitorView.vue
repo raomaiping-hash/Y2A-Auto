@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { monitorApi } from '@/api/endpoints'
 import { useToastStore } from '@/stores/toast'
@@ -22,7 +22,7 @@ const loading = ref(true)
 async function load() {
   loading.value = true
   try {
-    const res = (await monitorApi.status()) as unknown as { configs: MonitorConfig[]; history: Record<string, unknown>[] }
+    const res = await monitorApi.status()
     configs.value = res.configs ?? []
     history.value = res.history ?? []
   } catch (e) {
@@ -34,8 +34,15 @@ async function load() {
 
 onMounted(load)
 
+onBeforeUnmount(() => {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+})
+
 /* ---- 立即执行 + 进度轮询 ---- */
-const runState = ref<{ open: boolean; configId: number | null; name: string; operationId: string | null; progress: { message: string; detail: string; percent: number | null; done: boolean; success: boolean } | null }>({
+const runState = ref<{ open: boolean; configId: number | null; name: string; operationId: string | null; progress: { message: string; detail: string; percent: number | null | undefined; done: boolean; success: boolean | null | undefined } | null }>({
   open: false,
   configId: null,
   name: '',
@@ -47,7 +54,7 @@ let pollTimer: ReturnType<typeof setInterval> | null = null
 
 async function runConfig(cfg: MonitorConfig) {
   try {
-    const res = (await monitorApi.run(Number(cfg.id))) as unknown as { success: boolean; message?: string; operation_id?: string }
+    const res = await monitorApi.run(Number(cfg.id))
     runState.value = {
       open: true,
       configId: Number(cfg.id),
@@ -70,9 +77,7 @@ async function runConfig(cfg: MonitorConfig) {
 async function pollRun() {
   if (!runState.value.operationId) return
   try {
-    const p = (await monitorApi.runStatus(runState.value.operationId)) as unknown as {
-      found: boolean; message: string; detail: string; percent: number | null; done: boolean; success: boolean
-    }
+    const p = await monitorApi.runStatus(runState.value.operationId)
     if (!p.found) {
       stopPolling('监控任务状态已丢失')
       return

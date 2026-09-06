@@ -10,6 +10,7 @@ API: POST https://api.fish.audio/v1/tts
 返回二进制音频（format 决定容器）。
 """
 
+import threading
 import time
 from typing import Any, Dict, Optional
 
@@ -24,6 +25,11 @@ FISH_TTS_MODEL_DEFAULT = 's2.1-pro-free'
 #: 请求间隔（秒），防止免费模型 fair-use 限流
 FISH_REQUEST_INTERVAL_SECONDS = 0.35
 
+# 进程级共享限流：模块级锁 + 全局上次请求时间戳。
+# 之前 _last_request_at 是实例级，跨并发任务互不共享，多任务同跑会突破 fair-use 限额。
+_fish_rate_limit_lock = threading.Lock()
+_last_request_at = 0.0
+
 
 class FishAudioProvider(BaseTTSProvider):
     """Fish Audio 语音合成。"""
@@ -36,15 +42,19 @@ class FishAudioProvider(BaseTTSProvider):
         self.model = str(self.config.get('FISH_TTS_MODEL') or FISH_TTS_MODEL_DEFAULT).strip() or FISH_TTS_MODEL_DEFAULT
         self.timeout_seconds = float(self.config.get('FISH_TTS_TIMEOUT_SECONDS') or 90)
         self.request_interval = float(self.config.get('FISH_REQUEST_INTERVAL_SECONDS') or FISH_REQUEST_INTERVAL_SECONDS)
-        self._last_request_at = 0.0
 
     def _rate_limit_wait(self):
-        """串行调用限速：距上次请求不足间隔则等待。"""
-        now = time.time()
-        wait = self._last_request_at + self.request_interval - now
-        if wait > 0:
-            time.sleep(wait)
-        self._last_request_at = time.time()
+        """进程级共享限速：所有 provider 实例共同遵守 fair-use 间隔。
+
+        用模块级锁串行化"读-改全局时间戳"，保证同一时刻多个合成请求不会突破间隔。
+        """
+        global _last_request_at
+        with _fish_rate_limit_lock:
+            now = time.time()
+            wait = _last_request_at + self.request_interval - now
+            if wait > 0:
+                time.sleep(wait)
+            _last_request_at = time.time()
 
     def _synthesize_impl(self, text: str, voice: Optional[str], speed: float, output_format: str) -> bytes:
         if not self.api_key:

@@ -5,9 +5,19 @@ import type {
   ApiResponse,
   DashboardPayload,
   MonitorConfig,
+  MonitorConfigPayload,
+  MonitorHistoryPayload,
+  MonitorRunPayload,
+  MonitorRunStatusPayload,
+  MonitorStatusPayload,
   PaginationPayload,
   SessionPayload,
-  Task,
+  SettingsPayload,
+  SettingsSavePayload,
+  SettingsSaveProgressPayload,
+  TaskDetailPayload,
+  TaskUpdatePayload,
+  TgBotTokenPayload,
 } from './types'
 
 const V1 = '/api/v1'
@@ -39,7 +49,7 @@ export const tasksApi = {
     const suffix = qs.toString() ? `?${qs}` : ''
     return api<PaginationPayload>(`${V1}/tasks${suffix}`)
   },
-  get: (taskId: string) => api<Task>(`${V1}/tasks/${taskId}`),
+  get: (taskId: string) => api<TaskDetailPayload>(`${V1}/tasks/${taskId}`),
   add: (youtubeUrl: string, uploadTarget?: string, dubOptions?: { dub_enabled?: string; dub_voice_id?: string }) =>
     api<ApiResponse & { task_id?: string; task_ids?: string[]; count?: number }>(`${V1}/tasks`, {
       method: 'POST',
@@ -75,7 +85,7 @@ export const tasksApi = {
       body: { delete_files: deleteFiles },
     }),
   update: (taskId: string, fields: Record<string, unknown>) =>
-    api<ApiResponse & { task?: Task }>(`${V1}/tasks/${taskId}`, {
+    api<TaskUpdatePayload>(`${V1}/tasks/${taskId}`, {
       method: 'PATCH',
       body: fields,
     }),
@@ -94,23 +104,18 @@ export const tasksApi = {
 
 /* ---------- 设置 ---------- */
 export const settingsApi = {
-  get: () =>
-    api<{
-      config: Record<string, unknown>
-      acfun_partition_mapping: Record<string, unknown>
-      bilibili_partition_mapping: Record<string, unknown>
-    }>(`${V1}/settings`),
+  get: () => api<SettingsPayload>(`${V1}/settings`),
   save: (formData: FormData) =>
-    api<ApiResponse & { operation_id?: string }>(`${V1}/settings`, {
+    api<SettingsSavePayload>(`${V1}/settings`, {
       method: 'POST',
       formData,
     }),
   saveProgress: (operationId: string) =>
-    api<Record<string, unknown>>(`${V1}/settings/save-progress/${operationId}`),
+    api<SettingsSaveProgressPayload>(`${V1}/settings/save-progress/${operationId}`),
   resetGroup: (keys: string[]) =>
     api<ApiResponse>(`${V1}/settings/reset`, { method: 'POST', body: { keys } }),
   tgbotToken: (action: 'generate' | 'revoke') =>
-    api<ApiResponse & { token?: string; state?: Record<string, unknown> }>(`${V1}/settings/tgbot-token`, {
+    api<TgBotTokenPayload>(`${V1}/settings/tgbot-token`, {
       method: 'POST',
       body: { action },
     }),
@@ -141,10 +146,10 @@ export const healthApi = {
 
 /* ---------- YouTube 监控 ---------- */
 export const monitorApi = {
-  status: () => api<Record<string, unknown>>(`${V1}/monitor`),
+  status: () => api<MonitorStatusPayload>(`${V1}/monitor`),
   configs: () => api<{ configs: MonitorConfig[] }>(`${V1}/monitor/configs`),
   config: (configId: number) =>
-    api<{ config: MonitorConfig }>(`${V1}/monitor/configs/${configId}`),
+    api<MonitorConfigPayload>(`${V1}/monitor/configs/${configId}`),
   create: (payload: Record<string, unknown>) =>
     api<ApiResponse & { config_id?: number }>(`${V1}/monitor/configs`, { method: 'POST', body: payload }),
   update: (configId: number, payload: Record<string, unknown>) =>
@@ -152,13 +157,13 @@ export const monitorApi = {
   remove: (configId: number) =>
     api<ApiResponse>(`${V1}/monitor/configs/${configId}`, { method: 'DELETE' }),
   run: (configId: number) =>
-    api<ApiResponse & { operation_id?: string }>(`${V1}/monitor/configs/${configId}/run`, { method: 'POST' }),
+    api<MonitorRunPayload>(`${V1}/monitor/configs/${configId}/run`, { method: 'POST' }),
   runStatus: (operationId: string) =>
-    api<Record<string, unknown>>(`${V1}/monitor/run-status/${operationId}`),
+    api<MonitorRunStatusPayload>(`${V1}/monitor/run-status/${operationId}`),
   history: (configId: number) =>
-    api<{ videos: Record<string, unknown>[] }>(`${V1}/monitor/configs/${configId}/history`),
-  addToTasks: (configId: number, videoIds: string[]) =>
-    api<ApiResponse>(`${V1}/monitor/add_to_tasks`, { method: 'POST', body: { config_id: configId, video_ids: videoIds } }),
+    api<MonitorHistoryPayload>(`${V1}/monitor/configs/${configId}/history`),
+  addToTasks: (configId: number, videoId: string) =>
+    api<ApiResponse>(`${V1}/monitor/add_to_tasks`, { method: 'POST', body: { config_id: configId, video_id: videoId } }),
   clearHistory: (configId: number) =>
     api<ApiResponse>(`${V1}/monitor/configs/${configId}/history/clear`, { method: 'POST' }),
   clearAllHistory: () => api<ApiResponse>(`${V1}/monitor/history/clear_all`, { method: 'POST' }),

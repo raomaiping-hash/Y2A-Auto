@@ -126,6 +126,9 @@ class YouTubeMonitor:
         self._last_fetch_had_errors = False
         self._api_proxy_enabled = False
         self._last_api_init_error: Optional[str] = None
+        # 历史搬运模式：是否已到达时间窗口边界（用于完成判定，替代固定条数上限）。
+        self._last_channel_reached_boundary = False
+        self._window_reached_boundary = False
         self._init_database()
         self._init_youtube_api()
         
@@ -283,7 +286,22 @@ class YouTubeMonitor:
                 cursor.execute("ALTER TABLE monitor_history ADD COLUMN video_type TEXT")
             except sqlite3.OperationalError:
                 pass
-            
+
+            # (config_id, video_id) 唯一约束：把"去重判断+插入"从 check-then-insert
+            # 升级为数据库级原子约束，避免并发下重复入库/重复建任务。
+            # 旧库可能因原先无约束而积累重复行，建唯一索引前先清理（每个
+            # config+video 只保留 id 最小的一条），否则 CREATE UNIQUE INDEX 会失败。
+            cursor.execute('''
+                DELETE FROM monitor_history
+                WHERE id NOT IN (
+                    SELECT MIN(id) FROM monitor_history GROUP BY config_id, video_id
+                )
+            ''')
+            cursor.execute(
+                'CREATE UNIQUE INDEX IF NOT EXISTS idx_monitor_history_config_video '
+                'ON monitor_history (config_id, video_id)'
+            )
+
             conn.commit()
         
         # 如果是新数据库或表为空，尝试从配置文件恢复
@@ -911,16 +929,31 @@ class YouTubeMonitor:
                 # 每看到一个候选即计入消费，用于历史 offset 推进（含去重跳过）。
                 consumed_count += 1
 
-                # 先去重：已处理过的直接跳过，不参与本轮统计
-                if self._is_video_processed(video['id'], config_id):
+                # 先去重：读取历史行（含 added_to_tasks 供重试判断）。
+                history_row = self._get_history_row(video['id'], config_id)
+
+                if history_row is not None:
+                    # 已入库。若 auto_add 开启、此前入队失败（added_to_tasks=0）且
+                    # 未达本轮任务数量上限，则补一次入队重试，避免静默丢单。
+                    if (auto_add_enabled and not history_row.get('added_to_tasks')
+                            and added_count < max_add_to_tasks):
+                        task_id = self._add_video_to_tasks(video, auto_start=True, config_id=config_id)
+                        if task_id:
+                            self._mark_video_added_to_tasks(video['id'], config_id)
+                            added_count += 1
+                            logger.info(f"视频补入队成功 ({added_count}/{max_add_to_tasks}): {video['title']}")
                     logger.debug(f"视频已处理过，跳过: {video['title']}")
                     continue
 
-                # 未处理（新视频）：记录到历史（去重），并按配置决定是否加入任务队列。
+                # 未处理（新视频）：原子入库（兼做去重），并按配置决定是否入队。
                 should_add_to_tasks = auto_add_enabled and added_count < max_add_to_tasks
 
-                # 始终保存到历史记录，但是否添加到任务队列由 auto_add_enabled 控制
-                self._save_video_history(video, config_id, auto_add_to_tasks=should_add_to_tasks)
+                # 原子插入：返回是否真正新插入。若非新插入（并发窗口被其他连接抢先入库），
+                # 视作已存在跳过，不重复统计。
+                is_new = self._save_video_history(video, config_id, auto_add_to_tasks=should_add_to_tasks)
+                if not is_new:
+                    logger.debug(f"并发窗口内视频已被其他连接入库，跳过: {video['title']}")
+                    continue
                 processed_count += 1
 
                 if should_add_to_tasks:
@@ -1195,6 +1228,8 @@ class YouTubeMonitor:
         logger.info(f"开始处理 {len(channel_ids)} 个频道，模式: {channel_mode}，请求限制: {max_requests}/{config.get('schedule_interval', 120)}分钟")
         
         had_error = False
+        # 收集每个频道的「是否已覆盖时间窗口边界」标记；search 模式不参与，仅播放列表模式计入。
+        boundary_flags = []
         for i, channel_id in enumerate(channel_ids, 1):
             if request_count >= max_requests:
                 logger.warning(f"达到请求限制 {max_requests}/{config.get('schedule_interval', 120)}分钟，跳过剩余 {len(channel_ids) - i + 1} 个频道")
@@ -1211,6 +1246,7 @@ class YouTubeMonitor:
                     # 历史搬运和最新跟进模式都使用播放列表方式
                     videos = self._fetch_channel_playlist_videos(channel_id, config, published_after, published_before)
                     request_count += 3  # 频道信息 + 播放列表 + 视频详情
+                    boundary_flags.append(self._last_channel_reached_boundary)
                 
                 all_videos.extend(videos)
                 logger.info(f"频道 {channel_id} 获取到 {len(videos)} 个视频")
@@ -1222,11 +1258,15 @@ class YouTubeMonitor:
             except Exception as e:
                 logger.error(f"获取频道 {channel_id} 视频失败: {str(e)}")
                 had_error = True
+                # 频道抓取失败时不应视为「已到达窗口边界」
+                boundary_flags.append(False)
                 continue
         
         logger.info(f"频道视频获取完成，总计 {len(all_videos)} 个视频，使用了 {request_count} 个API请求")
         # 记录本次获取是否出现错误，供上层决定是否更新last_run_time
         self._last_fetch_had_errors = had_error
+        # 所有频道都到达时间窗口边界才算本轮完整覆盖（任一失败/未覆盖则整体未完成）。
+        self._window_reached_boundary = bool(boundary_flags) and all(boundary_flags)
         return all_videos
     
     def _fetch_channel_search_videos(self, channel_id: str, config: Dict[str, Any], published_after: str, published_before: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -1342,35 +1382,39 @@ class YouTubeMonitor:
             upload_playlist_id = channel_response['items'][0]['contentDetails']['relatedPlaylists']['uploads']
             logger.debug(f"频道 {channel_id} 上传播放列表ID: {upload_playlist_id}")
             
-            # 根据频道模式调整获取数量
+            # 根据频道模式调整获取数量与分页策略
             channel_mode = config.get('channel_mode', 'latest')
+            # 分页翻页碰到「当前页最早视频早于 published_after」即视为已覆盖到时间窗口下边界。
+            # 不再用固定条数上限（旧 latest 固定 latest_max_results、历史固定 500），
+            # 否则单间隔新视频超过上限的会永久漏扫，历史 >500 会漏扫且误报完成。
             if channel_mode == 'historical':
-                # 历史搬运模式，获取更多视频，支持分页
-                max_results_per_page = 50  # YouTube API单次最大50
-                max_total_videos = 500  # 最多检查500个视频
+                max_results_per_page = 50  # YouTube API 单次最大50
+                max_total_videos = 10000   # 安全上限，防止异常时无限翻页
             else:
                 # 最新跟进模式
-                max_results_per_page = config.get('latest_max_results', 20)
-                max_total_videos = max_results_per_page
-            
+                max_results_per_page = min(config.get('latest_max_results', 20), 50)
+                # 分页直到覆盖 last_run_time；安全上限防失控
+                max_total_videos = max(max_results_per_page * 20, 200)
+
             # 分页获取播放列表中的视频
             all_playlist_items = []
             next_page_token = None
             videos_fetched = 0
-            
+            reached_boundary = False
+
             while videos_fetched < max_total_videos:
                 # 计算本次请求的数量
                 current_page_size = min(max_results_per_page, max_total_videos - videos_fetched)
-                
+
                 playlist_params = {
                     'part': 'snippet',
                     'playlistId': upload_playlist_id,
                     'maxResults': current_page_size
                 }
-                
+
                 if next_page_token:
                     playlist_params['pageToken'] = next_page_token
-                
+
                 if self.youtube is None:
                     logger.error(f"频道 {channel_id} YouTube API 对象为 None")
                     break
@@ -1379,21 +1423,26 @@ class YouTubeMonitor:
                 current_items = playlist_response['items']
                 all_playlist_items.extend(current_items)
                 videos_fetched += len(current_items)
-                
+
                 # 检查是否还有更多页面
                 next_page_token = playlist_response.get('nextPageToken')
+
+                # new-first 排序：本页最老的视频若已早于 published_after，说明时间窗口
+                # 下边界已覆盖，后续页只会更旧，无需继续翻页。
+                if current_items:
+                    earliest_video_time = min(item['snippet']['publishedAt'] for item in current_items)
+                    if earliest_video_time < published_after:
+                        logger.info(f"频道 {channel_id} 已覆盖到时间窗口边界，停止获取更多视频")
+                        reached_boundary = True
+                        break
+
                 if not next_page_token or len(current_items) == 0:
+                    # 没有更多页：已翻遍全部，同样视为到达窗口边界
+                    reached_boundary = True
                     break
-                
-                # 在历史搬运模式下，如果我们已经找到足够的时间范围内的视频，可以提前停止
-                if channel_mode == 'historical':
-                    # 快速检查当前这批视频中最早的时间
-                    if current_items:
-                        earliest_video_time = min(item['snippet']['publishedAt'] for item in current_items)
-                        # 如果最早的视频都比我们的开始时间还早，说明后面的视频都不会在范围内了
-                        if earliest_video_time < published_after:
-                            logger.info(f"找到了早于开始时间的视频，停止获取更多视频")
-                            break
+
+            # 记录本轮该频道是否到达时间窗口边界（供历史「完成」判定使用）
+            self._last_channel_reached_boundary = reached_boundary
             
             logger.info(f"频道 {channel_id} 总共获取了 {len(all_playlist_items)} 个播放列表项目")
             
@@ -1674,18 +1723,45 @@ class YouTubeMonitor:
                 (video_id, config_id)
             )
             return cursor.fetchone() is not None
-    
-    def _save_video_history(self, video_info, config_id, auto_add_to_tasks=False):
-        """保存视频到历史记录"""
+
+    def _get_history_row(self, video_id, config_id):
+        """读取视频的历史记录行（含 added_to_tasks），用于去重与入队重试判断。"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            
+            cursor.execute(
+                'SELECT id, config_id, video_id, added_to_tasks FROM monitor_history '
+                'WHERE video_id = ? AND config_id = ?',
+                (video_id, config_id)
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            columns = [description[0] for description in cursor.description]
+            return dict(zip(columns, row))
+
+    def _save_video_history(self, video_info, config_id, auto_add_to_tasks=False):
+        """原子保存视频到历史记录，并返回是否真正新插入。
+
+        去重判断与插入合并为单条 INSERT OR IGNORE（依赖 (config_id, video_id) 唯一索引），
+        避免并发 check-then-insert 竞态导致的重复入库/重复建任务。
+
+        返回 True 表示本调用成功插入新记录；返回 False 表示该 (config_id, video_id)
+        已存在（去重命中或并发窗口被其他连接先插入）。
+
+        入队语义：只有 _add_video_to_tasks 成功后才把 added_to_tasks 置 1；
+        入队失败时保持 0，下一轮 run_monitor 会针对 added_to_tasks=0 且 auto_add 开启
+        的视频重试入队，避免"已入库但永不重试"的静默丢单。
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            rows_before = conn.total_changes
+
             cursor.execute('''
-                INSERT INTO monitor_history (
+                INSERT OR IGNORE INTO monitor_history (
                     config_id, video_id, video_type, video_title, channel_title,
                     view_count, like_count, comment_count, duration,
                     published_at, added_to_tasks
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
             ''', (
                 config_id,
                 video_info['id'],
@@ -1697,26 +1773,62 @@ class YouTubeMonitor:
                 video_info['comment_count'],
                 video_info['duration'],
                 video_info['published_at'],
-                1 if auto_add_to_tasks else 0
             ))
-            
+            is_new = conn.total_changes > rows_before
+
+            # 立即提交原子插入，释放写锁，避免后续 add_task 打开新连接时因写锁等待/超时。
             conn.commit()
+
+            if not is_new:
+                return False
+
             logger.info(f"视频已保存到历史记录: {video_info['title']}")
-            
-            # 如果启用自动添加到任务队列，直接添加
+
+            # 只有自动入队且真正新插入时才尝试入队；成功后用独立连接标记 added_to_tasks=1，
+            # 入队失败则保持 0，下一轮 run_monitor 会重试。
             if auto_add_to_tasks:
                 task_id = self._add_video_to_tasks(video_info, auto_start=True, config_id=config_id)
                 if task_id:
-                    # 更新数据库标记为已添加
-                    cursor.execute(
-                        'UPDATE monitor_history SET added_to_tasks = 1 WHERE video_id = ? AND config_id = ?',
-                        (video_info['id'], config_id)
-                    )
+                    self._mark_video_added_to_tasks(video_info['id'], config_id)
+
+            return True
     
+    def _find_existing_task_for_url(self, video_url):
+        """任务级去重：查找 tasks 表中相同 youtube_url 的 pending/处理中任务。
+
+        跨多个监控配置时，同一视频可能被不同配置分别入队，add_task 只按
+        youtube_url 新增而不去重。这里在入队前预判，已存在活跃任务则不再重复建。
+
+        任务系统不可用（如单测 stub 环境）时降级为不预判，直接交由 add_task。
+        返回已有任务 id 或 None。
+        """
+        try:
+            from modules.task_manager import db_connect, TASK_STATES, PROCESSING_STATES
+            active_states = [TASK_STATES['PENDING']] + list(PROCESSING_STATES)
+            placeholders = ','.join('?' * len(active_states))
+            with db_connect() as conn:
+                row = conn.execute(
+                    f'SELECT id FROM tasks WHERE youtube_url = ? '
+                    f'AND status IN ({placeholders}) LIMIT 1',
+                    [video_url] + active_states
+                ).fetchone()
+                if row:
+                    return row['id'] if isinstance(row, dict) else row[0]
+        except Exception as e:
+            logger.debug(f"任务级去重预判不可用，跳过: {e}")
+        return None
+
     def _add_video_to_tasks(self, video_info, auto_start=True, config_id=None):
         """将视频添加到任务队列（可携带监控模板的配音配置）。"""
         try:
             video_url = f"https://www.youtube.com/watch?v={video_info['id']}"
+
+            # 跨配置任务级去重：已存在同 URL 的 pending/处理中任务时不再重复入队。
+            existing_task_id = self._find_existing_task_for_url(video_url)
+            if existing_task_id:
+                logger.info(f"任务已存在（跨配置去重），跳过重复入队: {video_url}, task_id: {existing_task_id}")
+                return existing_task_id
+
             task_id = add_task(video_url)
 
             if task_id:
@@ -1893,10 +2005,18 @@ class YouTubeMonitor:
 
             logger.info(f"历史搬运偏移量更新为: {new_offset} (本轮消费 {consumed_count} 个候选)")
 
-            # 检查是否已经处理完所有视频
-            total_candidates = len(all_filtered_videos or [])
-            if total_candidates and new_offset >= total_candidates:
-                logger.info(f"历史搬运已完成！总共处理了 {new_offset} 个视频")
+            # 完成判定：优先用「是否已到达时间窗口边界」（由分页翻页决定），
+            # 它才是真实窗口边界，而非本轮抓到的条数。固定条数上限（旧 500）
+            # 会导致超量漏扫并误报完成。仅当边界标志为 True 才判定完成；
+            # 为 False 表示本轮尚未翻到窗口边界（后续还有更早视频），仅推进进度；
+            # 边界不可用（None，单测直接调用）时回退到 offset 判定以兼容旧行为。
+            reached_boundary = getattr(self, '_window_reached_boundary', None)
+            if reached_boundary is True:
+                logger.info(f"历史搬运已完成！已到达时间窗口边界，共消费 {new_offset} 个候选")
+            elif reached_boundary is None:
+                total_candidates = len(all_filtered_videos or [])
+                if total_candidates and new_offset >= total_candidates:
+                    logger.info(f"历史搬运已完成！总共处理了 {new_offset} 个视频")
 
         except Exception as e:
             logger.error(f"更新历史搬运进度失败: {str(e)}")

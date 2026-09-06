@@ -24,7 +24,7 @@ from apscheduler.schedulers.base import SchedulerNotRunningError
 import queue
 from .utils import get_app_root_dir, get_app_subdir
 from .ffmpeg_manager import get_ffmpeg_path, get_ffprobe_path
-from .config_manager import normalize_video_cpu_preset
+from .config_manager import normalize_video_cpu_preset, get_config_default
 from .notifications import (
     EVENT_TASK_ADDED,
     EVENT_TASK_COMPLETED,
@@ -254,6 +254,12 @@ _ACTIVE_TASK_IDS = set()
 _ACTIVE_TASKS_LOCK = threading.Lock()
 _TASK_SCHEDULING_LOCK = threading.RLock()
 
+# 卡死看门狗：记录每个活动任务首次下发取消请求的时间；超过阈值仍未响应则强制重置 DB 状态，
+# 避免不可中断 IO 的任务永久占用并发槽。
+_STUCK_WATCHDOG_CANCEL_ISSUED_AT: dict = {}
+_STUCK_WATCHDOG_CANCEL_LOCK = threading.Lock()
+_STUCK_WATCHDOG_FORCE_RESET_SECONDS = 60
+
 
 def get_task_cancel_event(task_id):
     """获取任务取消事件（若不存在则创建）"""
@@ -290,6 +296,8 @@ def clear_task_cancel(task_id, clear_flag=False):
         return
     with _TASK_CANCEL_LOCK:
         _TASK_CANCEL_FLAGS.pop(task_id, None)
+    with _STUCK_WATCHDOG_CANCEL_LOCK:
+        _STUCK_WATCHDOG_CANCEL_ISSUED_AT.pop(task_id, None)
 
 
 def _mark_task_active(task_id: str) -> bool:
@@ -576,18 +584,37 @@ def _get_effective_metadata_limits(upload_target):
     - both：按双平台共同最低限制执行
     - bilibili：按 bilibili 限制执行
     - acfun / 其他：按 AcFun 限制执行
+
+    限制值统一从 config_manager 的可配置键读取（DEFAULT 兜底），
+    与各平台上传器保持一致，避免多处硬编码漂移。
     """
     target = normalize_upload_target(upload_target)
+    try:
+        from modules.config_manager import get_config_default as _gcd
+    except Exception:
+        _gcd = None
+
+    def _limit(config_key, fallback):
+        if _gcd is None:
+            return fallback
+        value = _gcd(config_key)
+        if value is None:
+            return fallback
+        try:
+            return int(value)
+        except Exception:
+            return fallback
+
     if target == UPLOAD_TARGET_BILIBILI:
         return {
-            'title_limit': 80,
+            'title_limit': _limit('METADATA_TITLE_LIMIT_BILIBILI', 80),
             # B 站投稿接口简介实际限制为 1000 字，且换行/格式符占用计数；
             # 实测 2000/1500 字均触发 21010（简介字数过长）。用保守值 800 防边界。
-            'description_limit': 800,
+            'description_limit': _limit('METADATA_DESCRIPTION_LIMIT_BILIBILI', 800),
         }
     return {
-        'title_limit': 50,
-        'description_limit': 1000,
+        'title_limit': _limit('METADATA_TITLE_LIMIT_ACFUN', 50),
+        'description_limit': _limit('METADATA_DESCRIPTION_LIMIT_ACFUN', 1000),
     }
 
 
@@ -698,11 +725,11 @@ def _get_missing_required_translation_fields(task, config) -> list:
         return []
 
     missing_fields = []
-    if _as_bool(config.get('TRANSLATE_TITLE', True)) and _normalize_task_text(task.get('video_title_original')):
+    if _as_bool(config.get('TRANSLATE_TITLE', get_config_default('TRANSLATE_TITLE'))) and _normalize_task_text(task.get('video_title_original')):
         if not _normalize_task_text(task.get('video_title_translated')):
             missing_fields.append('title')
 
-    if _as_bool(config.get('TRANSLATE_DESCRIPTION', True)) and _normalize_task_text(task.get('description_original')):
+    if _as_bool(config.get('TRANSLATE_DESCRIPTION', get_config_default('TRANSLATE_DESCRIPTION'))) and _normalize_task_text(task.get('description_original')):
         if not _normalize_task_text(task.get('description_translated')):
             missing_fields.append('description')
 
@@ -728,6 +755,19 @@ def _build_missing_translation_review_message(field_names) -> str:
 def _is_asr_enabled(config: dict) -> bool:
     """ASR总开关。"""
     return _as_bool(config.get('SPEECH_RECOGNITION_ENABLED', False))
+
+
+def _dub_segments_signature(segments) -> tuple:
+    """返回配音片段的可比签名（仅含拼接相关字段）。
+
+    用于判断 align_segments_smart_mix 是否实际改变了片段（变速后 wav_path/duration_s
+    变化），从而决定是否需要对 dub.wav 做二次拼接，避免冗余 ffmpeg 调用。
+    """
+    return tuple(
+        (str(getattr(s, 'wav_path', '') or ''), float(getattr(s, 'duration_s', 0.0) or 0.0))
+        for s in (segments or [])
+        if getattr(s, 'wav_path', None) and (getattr(s, 'duration_s', 0) or 0) > 0
+    )
 
 
 def _parse_pipeline_checkpoint(raw_value):
@@ -757,8 +797,19 @@ def _infer_completed_stages_from_task(task):
     if task.get('metadata_json_path_local') or task.get('video_title_original') or task.get('description_original'):
         completed.add(PIPELINE_STAGE_FETCH_INFO)
 
-    # 翻译标题/描述：任一翻译字段存在即可视为完成
-    if task.get('video_title_translated') or task.get('description_translated'):
+    # 翻译标题/描述：仅当“有需译原文 且 按配置要求无缺失字段”才算完成。
+    # 不能再用“任一翻译字段存在”推断——标题已译/简介缺失会被误判为翻译完成，
+    # 导致重启后跳过翻译、最终用英文原文（或缺译）上传。
+    # 同时要求有需译原文：翻译完全关闭时不应把本阶段标记为完成，
+    # 否则用户在后续开启翻译后，_get_completed_stages 会跳过翻译阶段。
+    try:
+        from modules.config_manager import load_config
+        _cfg_for_infer = load_config()
+    except Exception:
+        _cfg_for_infer = {}
+    _needs_title_translation = _as_bool(_cfg_for_infer.get('TRANSLATE_TITLE', get_config_default('TRANSLATE_TITLE'))) and _normalize_task_text(task.get('video_title_original'))
+    _needs_desc_translation = _as_bool(_cfg_for_infer.get('TRANSLATE_DESCRIPTION', get_config_default('TRANSLATE_DESCRIPTION'))) and _normalize_task_text(task.get('description_original'))
+    if (_needs_title_translation or _needs_desc_translation) and not _get_missing_required_translation_fields(task, _cfg_for_infer):
         completed.add(PIPELINE_STAGE_TRANSLATE_CONTENT)
 
     # 标签：字段存在（即使是空数组字符串）也认为已跑过
@@ -869,11 +920,12 @@ def recover_interrupted_tasks_to_pending():
                     recovered += 1
                     continue
 
-                # 双平台仅部分成功：恢复为 failed，让 process_task 走“失败点续传”只补失败平台
+                # 双平台仅部分成功：恢复为 pending，让 process_task 走“失败点续传”只补失败平台。
+                # 不能停回 failed——failed 会停在原地等人工；pending 会被定时扫描器自动捡起续传。
                 if has_partial_upload_resp:
                     conn.execute(
                         'UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?',
-                        (TASK_STATES['FAILED'], now_str, task_id)
+                        (TASK_STATES['PENDING'], now_str, task_id)
                     )
                     recovered += 1
                     continue
@@ -1518,10 +1570,14 @@ def update_task(task_id, silent=False, **kwargs):
     values = [value for _, value in filtered_items]
     values.append(task_id)
     
-    conn = get_db_connection()
-    try:
+    # 使用 db_connect 上下文管理器：成功自动提交、异常自动回滚、退出必然关闭，
+    # 修复此前 get_db_connection()+手动 close() 在异常路径泄漏连接的问题。
+    # BEGIN IMMEDIATE 把"读旧状态 + 写新状态"放进同一写事务，消除并发写下的 TOCTOU：
+    # previous_status 快照与本次写入保持一致，避免通知重复/失真。
+    with db_connect() as conn:
         for attempt in range(1, DB_WRITE_RETRY_TIMES + 1):
             try:
+                conn.execute('BEGIN IMMEDIATE')
                 existing_row = conn.execute('SELECT * FROM tasks WHERE id = ?', (task_id,)).fetchone()
                 existing_task = dict(existing_row) if existing_row else None
                 previous_status = existing_task.get('status') if existing_task else None
@@ -1601,9 +1657,11 @@ def update_task(task_id, silent=False, **kwargs):
                 return False
             except Exception as e:
                 logger.error(f"更新任务 {task_id} 失败: {str(e)}")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
                 return False
-    finally:
-        conn.close()
 
 def get_task(task_id):
     """
@@ -2129,6 +2187,7 @@ def _reap_task_files_after_cancel(task_id):
 upload_queue_lock = threading.Lock()
 upload_semaphore = None
 task_semaphore = None
+_TASK_SEMAPHORE_CURRENT_MAX = None
 
 def init_upload_semaphore(max_concurrent_uploads=1):
     """初始化上传信号量"""
@@ -2139,10 +2198,27 @@ def init_upload_semaphore(max_concurrent_uploads=1):
 
 def init_task_semaphore(max_concurrent_tasks=3):
     """初始化任务并发信号量"""
-    global task_semaphore
-    logger.info(f"初始化任务信号量，最大并发任务数: {max_concurrent_tasks}")
-    task_semaphore = threading.Semaphore(max_concurrent_tasks)
+    global task_semaphore, _TASK_SEMAPHORE_CURRENT_MAX
+    capacity = max(1, int(max_concurrent_tasks or 1))
+    _TASK_SEMAPHORE_CURRENT_MAX = capacity
+    logger.info(f"初始化任务信号量，最大并发任务数: {capacity}")
+    task_semaphore = threading.Semaphore(capacity)
     logger.info(f"任务信号量初始化完成: {task_semaphore}")
+
+
+def _force_release_task_slot(task_id):
+    """卡死看门狗：强制释放被卡死线程占用的任务信号量槽位。
+
+    直接对同一信号量 release 有 double-release 风险（卡死线程若最终恢复还会再释放一次），
+    会让信号量计数超额、允许超出上限的并发。安全做法是重建 task_semaphore：
+    卡死线程持有旧实例，其后续 release 只作用于被废弃的旧对象，不影响新容量。
+    """
+    global task_semaphore
+    with _TASK_SCHEDULING_LOCK:
+        if task_semaphore is None:
+            return
+        capacity = _TASK_SEMAPHORE_CURRENT_MAX or 1
+        init_task_semaphore(capacity)
 
 def reset_stuck_tasks(skip_active=False, cancel_active=False):
     """重置卡住的任务"""
@@ -2176,12 +2252,42 @@ def reset_stuck_tasks(skip_active=False, cancel_active=False):
                     if skip_active and _is_task_active(task_id):
                         if cancel_active:
                             request_task_cancel(task_id)
-                        logger.warning(
-                            f"任务 {task_id[:8]}... 仍处于活动线程中，已跳过自动重置"
-                        )
+                            with _STUCK_WATCHDOG_CANCEL_LOCK:
+                                first_issued = _STUCK_WATCHDOG_CANCEL_ISSUED_AT.setdefault(task_id, current_time)
+                            issued_age = current_time - first_issued
+                        else:
+                            issued_age = 0
+                        if cancel_active and issued_age > _STUCK_WATCHDOG_FORCE_RESET_SECONDS:
+                            # 卡死看门狗：取消请求已超阈值，任务仍占用并发槽且不可中断 IO 未退出。
+                            # 强制重置 DB 状态 + 释放占用的任务信号量槽位 + 标记线程不活跃，
+                            # 让调度器能继续调度其他 pending 任务。
+                            logger.warning(
+                                f"卡死看门狗：任务 {task_id[:8]}... 在取消请求后超过 "
+                                f"{_STUCK_WATCHDOG_FORCE_RESET_SECONDS} 秒仍无响应，强制重置"
+                            )
+                            conn.execute('''
+                                UPDATE tasks 
+                                SET status = ?, error_message = ?, updated_at = ?
+                                WHERE id = ?
+                            ''', (TASK_STATES['FAILED'], 
+                                  f"卡死看门狗超时 (原状态: {old_status})",
+                                  datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                                  task_id))
+                            _mark_task_inactive(task_id)
+                            _force_release_task_slot(task_id)
+                            with _STUCK_WATCHDOG_CANCEL_LOCK:
+                                _STUCK_WATCHDOG_CANCEL_ISSUED_AT.pop(task_id, None)
+                            reset_count += 1
+                            logger.info(f"看门狗强制重置任务 {task_id[:8]}... 从 {old_status} 到 failed")
+                        else:
+                            logger.warning(
+                                f"任务 {task_id[:8]}... 仍处于活动线程中，已请求取消并等待响应"
+                            )
                         continue
 
-                    # 重置为失败状态
+                    # 重置为失败状态（任务不再处于活动线程，已无并发槽占用）
+                    with _STUCK_WATCHDOG_CANCEL_LOCK:
+                        _STUCK_WATCHDOG_CANCEL_ISSUED_AT.pop(task_id, None)
                     conn.execute('''
                         UPDATE tasks 
                         SET status = ?, error_message = ?, updated_at = ?
@@ -2265,8 +2371,8 @@ class TaskProcessor:
             config: 配置字典，包含各种API的配置信息
         """
         self.config = dict(config or {})
-        self._current_max_concurrent_tasks = _as_int(self.config.get('MAX_CONCURRENT_TASKS', 2), 2, minimum=1)
-        self._current_max_concurrent_uploads = _as_int(self.config.get('MAX_CONCURRENT_UPLOADS', 1), 1, minimum=1)
+        self._current_max_concurrent_tasks = _as_int(self.config.get('MAX_CONCURRENT_TASKS', get_config_default('MAX_CONCURRENT_TASKS')), 2, minimum=1)
+        self._current_max_concurrent_uploads = _as_int(self.config.get('MAX_CONCURRENT_UPLOADS', get_config_default('MAX_CONCURRENT_UPLOADS')), 1, minimum=1)
         self._runtime_limit_refresh_pending = False
         self._last_deferred_limit_signature = None
         
@@ -2303,7 +2409,7 @@ class TaskProcessor:
     def _register_periodic_jobs(self):
         """注册或刷新周期性任务。"""
         try:
-            scan_interval = _as_int(self.config.get('PENDING_SCAN_INTERVAL_SECONDS', 30), 30, minimum=5)
+            scan_interval = _as_int(self.config.get('PENDING_SCAN_INTERVAL_SECONDS', get_config_default('PENDING_SCAN_INTERVAL_SECONDS')), 30, minimum=5)
             self.scheduler.add_job(
                 self._check_and_start_next_pending_task,
                 'interval',
@@ -2317,7 +2423,7 @@ class TaskProcessor:
 
         try:
             stuck_check_interval = _as_int(
-                self.config.get('STUCK_TASK_CHECK_INTERVAL_SECONDS', 300),
+                self.config.get('STUCK_TASK_CHECK_INTERVAL_SECONDS', get_config_default('STUCK_TASK_CHECK_INTERVAL_SECONDS')),
                 300,
                 minimum=30,
             )
@@ -2332,10 +2438,34 @@ class TaskProcessor:
         except Exception as e:
             logger.warning(f"注册卡住任务扫描失败（不影响主流程）：{e}")
 
+    def _effective_max_concurrent_tasks(self):
+        """返回当前应生效的最大并发任务数（含内存感知降并发）。"""
+        base = _as_int(self.config.get('MAX_CONCURRENT_TASKS', get_config_default('MAX_CONCURRENT_TASKS')), 2, minimum=1)
+        if _should_reduce_concurrency():
+            reduced = max(1, base // 2)
+            if reduced != base:
+                logger.info(f"检测到高内存使用，降低并发数至 {reduced}")
+            return reduced
+        return base
+
+    def _sync_task_semaphore_capacity(self, desired_tasks):
+        """确保全局 task_semaphore 容量与 desired_tasks 一致。
+
+        内存感知降并发或配置变更时同步收缩/扩展信号量，避免“软提示不真限流”。
+        运行中的任务持有旧信号量实例，其最终 release 只作用于旧对象，不影响新容量。
+        """
+        global task_semaphore
+        with _TASK_SCHEDULING_LOCK:
+            if desired_tasks <= 0:
+                desired_tasks = 1
+            if task_semaphore is None or desired_tasks != self._current_max_concurrent_tasks:
+                init_task_semaphore(desired_tasks)
+                self._current_max_concurrent_tasks = desired_tasks
+
     def _refresh_runtime_limits(self, force=False):
         """按当前配置刷新并发上限；运行中有活动任务时延后生效。"""
-        desired_tasks = _as_int(self.config.get('MAX_CONCURRENT_TASKS', 2), 2, minimum=1)
-        desired_uploads = _as_int(self.config.get('MAX_CONCURRENT_UPLOADS', 1), 1, minimum=1)
+        desired_tasks = self._effective_max_concurrent_tasks()
+        desired_uploads = _as_int(self.config.get('MAX_CONCURRENT_UPLOADS', get_config_default('MAX_CONCURRENT_UPLOADS')), 1, minimum=1)
 
         if (
             desired_tasks == self._current_max_concurrent_tasks
@@ -2566,11 +2696,15 @@ class TaskProcessor:
             _raise_if_cancelled(task_id, task_logger)
             # 断点续跑：读取checkpoint + 根据现有任务字段推断已完成阶段
             completed_stages = _get_completed_stages(task)
-            # 将推断结果写回checkpoint（幂等），使后续重启更稳定
+            # 将推断结果写回checkpoint（幂等），使后续重启更稳定。
+            # 失败不再静默吞掉：记录 warning 以便排查断点续跑失效问题。
             try:
                 _persist_pipeline_checkpoint(task_id, completed_stages)
             except Exception:
-                pass
+                task_logger.warning(
+                    "断点续跑：写入 pipeline_checkpoint 失败（不影响本轮处理，但重启后可能重复跑已完成阶段）",
+                    exc_info=True,
+                )
 
             # 重新获取任务，避免排队等待期间状态变化导致基于旧快照决策
             task = get_task(task_id) or task
@@ -2628,8 +2762,8 @@ class TaskProcessor:
 
             # 2. 翻译/标签/分区推荐（如有需要）
             translate_enabled = (
-                self.config.get('TRANSLATE_TITLE', True)
-                or self.config.get('TRANSLATE_DESCRIPTION', True)
+                self.config.get('TRANSLATE_TITLE', get_config_default('TRANSLATE_TITLE'))
+                or self.config.get('TRANSLATE_DESCRIPTION', get_config_default('TRANSLATE_DESCRIPTION'))
             )
             # 兜底：即使配置关闭翻译，只要任务仍有未译的原文标题/简介，就显式提示，
             # 避免“静默跳过”导致上传时只用英文原文（此前多次踩坑）。
@@ -2659,7 +2793,7 @@ class TaskProcessor:
                         return
                 _raise_if_cancelled(task_id, task_logger)
 
-            if self.config.get('GENERATE_TAGS', True):
+            if self.config.get('GENERATE_TAGS', get_config_default('GENERATE_TAGS')):
                 if PIPELINE_STAGE_GENERATE_TAGS in completed_stages:
                     task_logger.info("跳过标签生成（checkpoint已完成）")
                 else:
@@ -2668,7 +2802,7 @@ class TaskProcessor:
                         completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_GENERATE_TAGS)
                 _raise_if_cancelled(task_id, task_logger)
 
-            if self.config.get('RECOMMEND_PARTITION', False):
+            if self.config.get('RECOMMEND_PARTITION', get_config_default('RECOMMEND_PARTITION')):
                 if PIPELINE_STAGE_RECOMMEND_PARTITION in completed_stages:
                     task_logger.info("跳过分区推荐（checkpoint已完成）")
                 else:
@@ -2682,7 +2816,7 @@ class TaskProcessor:
                 _raise_if_cancelled(task_id, task_logger)
 
             # 3. 内容审核（如启用）
-            if self.config.get('CONTENT_MODERATION_ENABLED', False):
+            if self.config.get('CONTENT_MODERATION_ENABLED', get_config_default('CONTENT_MODERATION_ENABLED')):
                 if PIPELINE_STAGE_MODERATE_CONTENT in completed_stages:
                     task_logger.info("跳过内容审核（checkpoint已完成）")
                 else:
@@ -2714,8 +2848,8 @@ class TaskProcessor:
                 completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_DOWNLOAD_VIDEO)
 
             # 5. 字幕处理（翻译或烧录启用时）
-            subtitle_translation_enabled = _as_bool(self.config.get('SUBTITLE_TRANSLATION_ENABLED', False))
-            subtitle_embed_enabled = _as_bool(self.config.get('SUBTITLE_EMBED_IN_VIDEO', True))
+            subtitle_translation_enabled = _as_bool(self.config.get('SUBTITLE_TRANSLATION_ENABLED', get_config_default('SUBTITLE_TRANSLATION_ENABLED')))
+            subtitle_embed_enabled = _as_bool(self.config.get('SUBTITLE_EMBED_IN_VIDEO', get_config_default('SUBTITLE_EMBED_IN_VIDEO')))
             if subtitle_translation_enabled or subtitle_embed_enabled:
                 if PIPELINE_STAGE_TRANSLATE_SUBTITLE in completed_stages:
                     task_logger.info("跳过字幕处理（checkpoint已完成）")
@@ -2729,7 +2863,7 @@ class TaskProcessor:
                 _raise_if_cancelled(task_id, task_logger)
 
             # 5.5 配音（可选：DUBBING_ENABLED 全局开关，任务级覆盖）
-            dubbing_enabled = _as_bool(self.config.get('DUBBING_ENABLED', False))
+            dubbing_enabled = _as_bool(self.config.get('DUBBING_ENABLED', get_config_default('DUBBING_ENABLED')))
             task = get_task(task_id)
             if task and 'dub_enabled' in task and task['dub_enabled'] is not None:
                 dubbing_enabled = _as_bool(task.get('dub_enabled'))
@@ -2749,7 +2883,7 @@ class TaskProcessor:
                 task_logger.info("配音未启用，跳过配音阶段")
 
             # 6. 上传
-            if self.config.get('AUTO_MODE_ENABLED', False):
+            if self.config.get('AUTO_MODE_ENABLED', get_config_default('AUTO_MODE_ENABLED')):
                 # 若已有上传响应，避免重复上传
                 task = get_task(task_id)
                 upload_target = _get_task_upload_target(task)
@@ -2777,7 +2911,7 @@ class TaskProcessor:
                     task_logger.info("任务当前处于人工审核状态，保留待审核状态")
                 elif task['status'] != TASK_STATES['COMPLETED'] and task['status'] != TASK_STATES['FAILED']:
                     # 如果没有开启自动上传或者上传失败，则标记为"准备上传"
-                    if not self.config.get('AUTO_MODE_ENABLED', False) or not _task_has_upload_response(task, upload_target):
+                    if not self.config.get('AUTO_MODE_ENABLED', get_config_default('AUTO_MODE_ENABLED')) or not _task_has_upload_response(task, upload_target):
                         update_task(task_id, status=TASK_STATES['READY_FOR_UPLOAD'])
                         task_logger.info("任务处理完成，标记为准备上传")
                     else:
@@ -2841,37 +2975,22 @@ class TaskProcessor:
                     logger.debug("没有pending任务需要启动")
                 return
             
-            # 检查当前是否有正在运行的任务
-            processing_states = [
-                'fetching_info',
-                'info_fetched', 
-                TASK_STATES['TRANSLATING'], 
-                TASK_STATES['TAGGING'],
-                TASK_STATES['PARTITIONING'],
-                TASK_STATES['MODERATING'],
-                TASK_STATES['DOWNLOADING'], 
-                TASK_STATES['DOWNLOADED'],
-                TASK_STATES['ASR_TRANSCRIBING'],
-                TASK_STATES['TRANSLATING_SUBTITLE'],
-                TASK_STATES['ENCODING_VIDEO'],
-                TASK_STATES['UPLOADING']
-            ]
-            
+            # 检查当前是否有正在运行的任务（复用统一 PROCESSING_STATES 单一来源；
+            # 此前硬编码列表漏掉 DUBBING/ALIGNING/ASSEMBLING，会低估任务运行数）
             running_tasks = []
-            for state in processing_states:
+            for state in PROCESSING_STATES:
                 running_tasks.extend(get_tasks_by_status(state))
             running_task_ids = {task.get('id') for task in running_tasks if task.get('id')}
             effective_running_count = len(running_task_ids.union(active_task_ids))
             
             # 如果有任务正在运行且并发限制为1，则不启动新任务
             # 兼容字符串配置，安全转换为整数
-            max_concurrent = _as_int(self.config.get('MAX_CONCURRENT_TASKS', 2), 2, minimum=1)
+            max_concurrent = self._effective_max_concurrent_tasks()
             
-            # 内存感知并发控制：如果内存使用过高，降低并发数
-            if _should_reduce_concurrency():
-                max_concurrent = max(1, max_concurrent // 2)
-                logger.info(f"检测到高内存使用，降低并发数至 {max_concurrent}")
-                
+            # 内存感知降并发要真正生效：同步收缩 task_semaphore，
+            # 否则只是软提示，实际调度仍按未缩水的信号量放行新任务。
+            self._sync_task_semaphore_capacity(max_concurrent)
+            
             if effective_running_count >= max_concurrent:
                 logger.debug(
                     f"当前有效运行任务数 {effective_running_count}（DB运行中 {len(running_task_ids)}，活动线程 {len(active_task_ids)}），"
@@ -3225,8 +3344,8 @@ class TaskProcessor:
             if prompt_key in self.config:
                 openai_config[prompt_key] = self.config[prompt_key]
         
-        translate_title = bool(self.config.get('TRANSLATE_TITLE', True) and task.get('video_title_original'))
-        translate_description = bool(self.config.get('TRANSLATE_DESCRIPTION', True) and task.get('description_original'))
+        translate_title = bool(self.config.get('TRANSLATE_TITLE', get_config_default('TRANSLATE_TITLE')) and task.get('video_title_original'))
+        translate_description = bool(self.config.get('TRANSLATE_DESCRIPTION', get_config_default('TRANSLATE_DESCRIPTION')) and task.get('description_original'))
 
         if not translate_title and not translate_description:
             task_logger.info("标题和描述翻译均已禁用或缺少原文，跳过")
@@ -3303,8 +3422,8 @@ class TaskProcessor:
             task_logger.warning("检测到字幕质检已失败，跳过字幕翻译/烧录流程")
             return True
         
-        translation_enabled = _as_bool(self.config.get('SUBTITLE_TRANSLATION_ENABLED', False))
-        config_embed_enabled = _as_bool(self.config.get('SUBTITLE_EMBED_IN_VIDEO', True))
+        translation_enabled = _as_bool(self.config.get('SUBTITLE_TRANSLATION_ENABLED', get_config_default('SUBTITLE_TRANSLATION_ENABLED')))
+        config_embed_enabled = _as_bool(self.config.get('SUBTITLE_EMBED_IN_VIDEO', get_config_default('SUBTITLE_EMBED_IN_VIDEO')))
         if embed_in_video_override is None:
             should_embed_subtitle = config_embed_enabled
         else:
@@ -3763,13 +3882,18 @@ class TaskProcessor:
                 task_logger.warning("配音：合成失败，跳过配音")
                 return False
 
+            # 对齐前快照：dub_srt_to_audio 内部已按原始片段生成过 dub.wav。
+            valid_sig_before = _dub_segments_signature(segments)
+
             update_task(task_id, status=TASK_STATES['ALIGNING'])
             segments = align_segments_smart_mix(segments, task_logger)
-            # 重新拼接（对齐后时长变化）
+            # 仅当对齐实际改变了片段（变速后 wav_path/duration 变化）才重新拼接 dub.wav；
+            # 若对齐无任何变化，dub.wav 已由 dub_srt_to_audio 生成，二次拼接属冗余 ffmpeg 调用。
             from modules.dubbing import _concat_wav_segments
-            valid = [s for s in segments if s.wav_path and s.duration_s > 0]
-            if valid:
-                _concat_wav_segments(valid, dub_wav, task_logger)
+            if _dub_segments_signature(segments) != valid_sig_before:
+                valid = [s for s in segments if s.wav_path and s.duration_s > 0]
+                if valid:
+                    _concat_wav_segments(valid, dub_wav, task_logger)
 
             # 只烧中文：生成 zh_only ASS
             zh_ass = os.path.join(task_dir, f"dub_zh_{task_id}.ass")
@@ -3995,7 +4119,7 @@ class TaskProcessor:
             except Exception:
                 subtitle_lang = ''
 
-        translation_enabled = _as_bool(self.config.get('SUBTITLE_TRANSLATION_ENABLED', False))
+        translation_enabled = _as_bool(self.config.get('SUBTITLE_TRANSLATION_ENABLED', get_config_default('SUBTITLE_TRANSLATION_ENABLED')))
         source_is_zh = subtitle_lang == 'zh'
 
         # 有英文源 + 翻译 → 重新生成双语 ASS（会应用当前样式配置）
@@ -7733,7 +7857,7 @@ class TaskProcessor:
             'FIXED_PARTITION_ID': self.config.get('FIXED_PARTITION_ID', ''),
         }
         
-        if self.config.get('GENERATE_TAGS', True) and (title or description):
+        if self.config.get('GENERATE_TAGS', get_config_default('GENERATE_TAGS')) and (title or description):
             tags = generate_acfun_tags(
                 title, 
                 description, 
@@ -7793,12 +7917,12 @@ class TaskProcessor:
         }
         cover_path = task.get('cover_path_local', '')
 
-        task_logger.info(f"RECOMMEND_PARTITION设置: {self.config.get('RECOMMEND_PARTITION', False)}")
+        task_logger.info(f"RECOMMEND_PARTITION设置: {self.config.get('RECOMMEND_PARTITION', get_config_default('RECOMMEND_PARTITION'))}")
         from modules.utils import safe_str
         task_logger.info(f"标题长度: {len(safe_str(title))}, 描述长度: {len(safe_str(description))}")
         task_logger.info(f"任务目标平台: {upload_target}")
 
-        if not self.config.get('RECOMMEND_PARTITION', False):
+        if not self.config.get('RECOMMEND_PARTITION', get_config_default('RECOMMEND_PARTITION')):
             task_logger.info("分区推荐功能已禁用，跳过推荐")
             return True
 
@@ -8159,8 +8283,8 @@ class TaskProcessor:
                 task_logger.warning("检测到字幕质检已失败，跳过上传前的字幕处理")
                 return get_task(task_id)
 
-            should_embed_subtitle = _as_bool(self.config.get('SUBTITLE_EMBED_IN_VIDEO', True))
-            translation_enabled = _as_bool(self.config.get('SUBTITLE_TRANSLATION_ENABLED', False))
+            should_embed_subtitle = _as_bool(self.config.get('SUBTITLE_EMBED_IN_VIDEO', get_config_default('SUBTITLE_EMBED_IN_VIDEO')))
+            translation_enabled = _as_bool(self.config.get('SUBTITLE_TRANSLATION_ENABLED', get_config_default('SUBTITLE_TRANSLATION_ENABLED')))
             subtitle_path_original, subtitle_path_translated, subtitle_language = self._resolve_existing_subtitle_assets(
                 task_id, task, task_dir
             )
@@ -8393,7 +8517,7 @@ class TaskProcessor:
             return bool(title_text or description_text)
 
         tags = _normalize_tags_list(task.get('tags_generated'))
-        if self.config.get('GENERATE_TAGS', True) and not tags:
+        if self.config.get('GENERATE_TAGS', get_config_default('GENERATE_TAGS')) and not tags:
             if _has_usable_text(task):
                 task_logger.info("强制上传前检测到标签为空，继续执行标签生成阶段")
                 self._generate_tags(task_id, task_logger)
@@ -8405,7 +8529,7 @@ class TaskProcessor:
                 task = get_task(task_id) or task
                 completed_stages = _mark_stage_done(task_id, completed_stages, PIPELINE_STAGE_GENERATE_TAGS)
 
-        if self.config.get('RECOMMEND_PARTITION', False):
+        if self.config.get('RECOMMEND_PARTITION', get_config_default('RECOMMEND_PARTITION')):
             task = get_task(task_id) or task
             upload_target = _get_task_upload_target(task)
             missing_partition_platforms = [
@@ -8424,7 +8548,7 @@ class TaskProcessor:
                 else:
                     task_logger.warning("强制上传前分区缺失，但缺少标题和简介，无法补推荐分区")
 
-        if self.config.get('CONTENT_MODERATION_ENABLED', False):
+        if self.config.get('CONTENT_MODERATION_ENABLED', get_config_default('CONTENT_MODERATION_ENABLED')):
             task = get_task(task_id) or task
             if not task.get('moderation_result'):
                 task_logger.info("强制上传前检测到内容审核未完成，继续执行内容审核阶段")

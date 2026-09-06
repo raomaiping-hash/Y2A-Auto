@@ -232,6 +232,7 @@ const SECTIONS: SectionDef[] = [
       { key: 'AI_SEGMENTATION_BATCH_WINDOW_S', label: '批次窗口（秒）', type: 'number', step: '5' },
       { key: 'AI_SEGMENTATION_MAX_CHARS_PER_BATCH', label: '批次最大字符数', type: 'number' },
       { key: 'AI_SEGMENTATION_BOUNDARY_REFINE_ENABLED', label: '边界精炼', type: 'toggle' },
+      { key: 'AI_SEGMENTATION_BOUNDARY_WINDOW', label: '边界精炼窗口（每侧 cue 数）', type: 'number', min: 0, max: 20, hint: '每侧取 N 条 cue 进行审视' },
       { key: 'AI_SEGMENTATION_RHYTHM_ENABLED', label: '节奏后处理', type: 'toggle', hint: '合并过短/拆分过长片段' },
       { key: 'AI_SEGMENTATION_TEMPERATURE', label: '采样温度', type: 'number', step: '0.05' },
       { key: 'AI_SEGMENTATION_MAX_RETRIES', label: '分段重试次数', type: 'number' },
@@ -413,11 +414,7 @@ const cookieFiles = reactive<{ youtube: File | null; acfun: File | null; bilibil
 async function load() {
   loading.value = true
   try {
-    const res = (await settingsApi.get()) as unknown as {
-      config: Record<string, unknown>
-      tgbot_token_state: Record<string, unknown>
-      cookiecloud_status?: Record<string, unknown>
-    }
+    const res = await settingsApi.get()
     for (const key of Object.keys(res.config ?? {})) {
       form[key] = res.config[key]
     }
@@ -483,6 +480,10 @@ async function saveSettings() {
       }
     }
   }
+  // CookieCloud 开关不在 SECTIONS 内，需显式提交；否则后端会因缺失 checkbox 字段强制置 off
+  if (form.COOKIECLOUD_ENABLED !== undefined && form.COOKIECLOUD_ENABLED !== null) {
+    fd.append('COOKIECLOUD_ENABLED', boolOf(form.COOKIECLOUD_ENABLED) ? 'on' : 'off')
+  }
   for (const prompt of PROMPTS) {
     const mode = form[`${prompt.id}_MODE`]
     const text = form[`${prompt.id}_TEXT`]
@@ -498,7 +499,7 @@ async function saveSettings() {
   if (cookieFiles.bilibili) fd.append('bilibili_cookies_file', cookieFiles.bilibili)
 
   try {
-    const res = (await settingsApi.save(fd)) as unknown as { operation_id?: string; success: boolean }
+    const res = await settingsApi.save(fd)
     if (!res.operation_id) {
       toast.success('设置已保存')
       saveSubmitting.value = false
@@ -517,10 +518,7 @@ async function saveSettings() {
 
 async function pollSave() {
   try {
-    const p = (await settingsApi.saveProgress(lastOperationId)) as unknown as {
-      found: boolean; message: string; detail: string; percent: number | null
-      done: boolean; success: boolean; messages: { category: string; text: string }[]
-    }
+    const p = await settingsApi.saveProgress(lastOperationId)
     if (!p.found) {
       finishSave(false, '保存状态已丢失')
       return
@@ -596,7 +594,7 @@ let qrTimer: ReturnType<typeof setInterval> | null = null
 async function startQr(platform: 'acfun' | 'bilibili') {
   try {
     const api = platform === 'acfun' ? settingsApi.acfunQrStart : settingsApi.bilibiliQrStart
-    const res = (await api()) as unknown as { success: boolean; session_id?: string; image_base64?: string; mime_type?: string }
+    const res = await api()
     if (!res.success || !res.session_id) {
       toast.error('发起扫码登录失败', '请稍后重试')
       return
@@ -679,7 +677,7 @@ const tgBusy = ref(false)
 async function tgAction(action: 'generate' | 'revoke') {
   tgBusy.value = true
   try {
-    const res = (await settingsApi.tgbotToken(action)) as unknown as { success: boolean; message?: string; token?: string; state?: Record<string, unknown> }
+    const res = await settingsApi.tgbotToken(action)
     if (res.success) {
       tgbotState.value = res.state ?? {}
       toast.success(res.message || '操作成功')

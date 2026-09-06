@@ -22,10 +22,7 @@ const loading = ref(true)
 async function load() {
   loading.value = true
   try {
-    const res = (await monitorApi.history(configId.value)) as unknown as {
-      history: Record<string, unknown>[]; config: Record<string, unknown> | null;
-      stats: { total_records: number; added_to_tasks: number; avg_views: number; avg_likes: number }
-    }
+    const res = await monitorApi.history(configId.value)
     history.value = res.history ?? []
     config.value = res.config
     stats.value = res.stats
@@ -45,7 +42,7 @@ async function addToTasks(video: Record<string, unknown>) {
   if (adding.value.has(videoId)) return
   adding.value.add(videoId)
   try {
-    const r = await monitorApi.addToTasks(configId.value, [videoId])
+    const r = await monitorApi.addToTasks(configId.value, videoId)
     toast.success(r.message || '已加入任务队列')
     load()
   } catch (e) {
