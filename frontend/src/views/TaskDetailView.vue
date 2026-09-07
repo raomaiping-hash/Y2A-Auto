@@ -600,7 +600,7 @@ function formatTime(dt?: string): string {
   gap: var(--sp-4);
   align-items: start;
 }
-@media (max-width: 1080px) {
+@media (max-width: 1023px) {
   .detail-grid {
     grid-template-columns: 1fr;
   }
@@ -660,5 +660,42 @@ function formatTime(dt?: string): string {
   overflow-y: auto;
   font-size: var(--fs-xs);
   line-height: 1.7;
+}
+
+/* 移动端（<768）适配 */
+@media (max-width: 767px) {
+  .page-header {
+    align-items: flex-start;
+  }
+  .page-header .btn-icon {
+    width: 44px;
+    height: 44px;
+  }
+  .page-title {
+    font-size: 1.35rem;
+  }
+  .page-actions {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--sp-2);
+    width: 100%;
+  }
+  .page-actions .btn {
+    height: 44px;
+    min-height: 44px;
+    padding: 0 var(--sp-2);
+    font-size: var(--fs-sm);
+  }
+  .card-body .btn,
+  .card-pad .btn {
+    height: 44px;
+    min-height: 44px;
+  }
+  .info-value {
+    max-width: 78%;
+  }
+  :deep(.ui-toggle-row) {
+    min-height: 44px;
+  }
 }
 </style>

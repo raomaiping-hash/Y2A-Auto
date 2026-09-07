@@ -473,7 +473,7 @@ function uploadProgressValue(task: Task): number | null {
 }
 
 /* ---------- 移动端：任务表格转卡片式列表 ---------- */
-@media (max-width: 768px) {
+@media (max-width: 767px) {
   .table-wrap {
     overflow: visible;
   }
@@ -564,6 +564,24 @@ function uploadProgressValue(task: Task): number | null {
   }
   .filter-search .input {
     width: 100%;
+  }
+  /* 触控目标 ≥44px */
+  .page-actions .btn {
+    height: 44px;
+    min-height: 44px;
+  }
+  .filter-tab {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  :deep(.ui-pagination) {
+    flex-wrap: wrap;
+  }
+  :deep(.ui-pagination .page-btn) {
+    min-width: 44px;
+    height: 44px;
   }
 }
 </style>

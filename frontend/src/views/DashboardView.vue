@@ -217,7 +217,7 @@ function uploadLink(t: { upload_target: string; upload_id: string | null }): str
           <tbody>
             <tr v-for="t in data?.recent_tasks" :key="t.id" class="row-click" @click="$router.push(`/tasks/${t.id}`)">
               <td class="mono text-muted" data-label="ID">{{ t.id.slice(0, 6) }}…</td>
-              <td class="clamp-2" data-label="标题" style="max-width: 380px">{{ t.title }}</td>
+              <td class="clamp-2" data-label="标题">{{ t.title }}</td>
               <td class="ta-center" data-label="状态"><TaskStatusBadge :status="t.status" /></td>
               <td class="ta-center" data-label="平台">
                 <span class="target-chip">{{ t.upload_target === 'both' ? '双平台' : t.upload_target === 'bilibili' ? 'B站' : 'AcFun' }}</span>
@@ -489,13 +489,13 @@ function uploadLink(t: { upload_target: string; upload_id: string | null }): str
   font-size: var(--fs-sm);
 }
 
-@media (max-width: 1100px) {
+@media (max-width: 1023px) {
   .kpi-grid,
   .queue-grid {
     grid-template-columns: repeat(2, 1fr);
   }
 }
-@media (max-width: 560px) {
+@media (max-width: 767px) {
   .kpi-grid,
   .queue-grid {
     grid-template-columns: 1fr;
@@ -503,7 +503,7 @@ function uploadLink(t: { upload_target: string; upload_id: string | null }): str
 }
 
 /* 最近动态表格在窄屏转卡片式 */
-@media (max-width: 768px) {
+@media (max-width: 767px) {
   .table-wrap {
     overflow: visible;
   }
@@ -561,6 +561,18 @@ function uploadLink(t: { upload_target: string; upload_id: string | null }): str
     border-top: 1px solid var(--border-subtle);
     margin-top: 4px;
     padding-top: 8px;
+  }
+  /* 移动端触控目标放大 + 标题克制换行 */
+  .page-actions .btn {
+    height: 44px;
+    min-height: 44px;
+    padding: 0 var(--sp-3);
+  }
+  .page-title {
+    font-size: 1.35rem;
+  }
+  .table tbody td[data-label="标题"] {
+    min-width: 0;
   }
 }
 </style>

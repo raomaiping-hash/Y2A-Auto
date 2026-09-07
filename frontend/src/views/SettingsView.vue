@@ -913,7 +913,7 @@ function onSettingsScroll() {
                       :step="f.step || 1"
                       class="range"
                     />
-                    <span class="range-val">{{ form[f.key] }}{{ f.step && String(f.step).includes('.') ? '' : '' }}</span>
+                    <span class="range-val">{{ form[f.key] }}</span>
                   </div>
                   <select v-else-if="f.type === 'select'" v-model="form[f.key]" class="select">
                     <option v-for="opt in f.options" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
@@ -1212,7 +1212,7 @@ function onSettingsScroll() {
   padding: 8px;
 }
 
-@media (max-width: 960px) {
+@media (max-width: 767px) {
   .settings-layout {
     grid-template-columns: 1fr;
   }
@@ -1220,14 +1220,18 @@ function onSettingsScroll() {
     position: static;
     display: flex;
     flex-direction: row;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: 4px;
     padding: 8px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    white-space: nowrap;
   }
   /* 移动端横向 tab：去掉竖排的占满整行（更高优先级覆盖默认 width:100%） */
   .settings-nav .settings-nav-item {
     width: auto;
     flex: 0 0 auto;
+    white-space: nowrap;
   }
 }
 
@@ -1252,7 +1256,7 @@ function onSettingsScroll() {
   background: var(--accent-soft);
   font-weight: 600;
 }
-@media (max-width: 960px) {
+@media (max-width: 767px) {
   .settings-nav-item {
     width: auto;
   }
@@ -1279,7 +1283,7 @@ function onSettingsScroll() {
   grid-template-columns: 1fr 1fr;
   gap: var(--sp-4) var(--sp-5);
 }
-@media (max-width: 720px) {
+@media (max-width: 767px) {
   .fields-grid {
     grid-template-columns: 1fr;
   }
@@ -1340,7 +1344,7 @@ function onSettingsScroll() {
   grid-template-columns: 1fr 1fr;
   gap: var(--sp-4);
 }
-@media (max-width: 720px) {
+@media (max-width: 767px) {
   .grid-2 {
     grid-template-columns: 1fr;
   }
@@ -1447,7 +1451,7 @@ function onSettingsScroll() {
 }
 .range {
   flex: 1;
-  accent-color: var(--primary, #4f7cff);
+  accent-color: var(--accent);
   height: 6px;
 }
 .range-val {
@@ -1460,5 +1464,32 @@ function onSettingsScroll() {
 .field-input .range-wrap,
 .range-wrap .field-hint {
   display: block;
+}
+
+/* 移动端收敛：单保存入口、标题字号、触控目标、预览防溢出（规范 3.7 / M7） */
+@media (max-width: 767px) {
+  .page-title {
+    font-size: 1.35rem;
+  }
+  /* 顶栏与底部保存重复，移动端保留底部 save-bar 单一入口 */
+  .page-actions {
+    display: none;
+  }
+  .settings-nav-item {
+    min-height: 46px;
+  }
+  .btn {
+    min-height: 46px;
+  }
+  .btn-icon {
+    width: 46px;
+    height: 46px;
+  }
+  .preview-stage {
+    height: 150px;
+  }
+  .preview-sub {
+    max-width: 100%;
+  }
 }
 </style>

@@ -158,6 +158,11 @@ function typeLabel(t?: string): string {
   return 'YouTube 监控'
 }
 
+// cfg.enabled 类型为 unknown，统一断言为 boolean 供模板绑定，避免 TS Booleanish 报错
+function isEnabled(cfg: MonitorConfig): boolean {
+  return !!cfg.enabled
+}
+
 function videoTypeLabel(t?: string): string {
   if (t === 'video') return '普通'
   if (t === 'short') return '短'
@@ -214,7 +219,7 @@ function formatTime(dt?: string): string {
       <div class="monitor-grid">
         <div v-for="cfg in configs" :key="cfg.id" class="card monitor-card">
           <div class="monitor-card-head">
-            <div class="monitor-icon" :class="{ off: !cfg.enabled }">
+            <div class="monitor-icon" :class="{ off: !isEnabled(cfg) }">
               <i class="bi bi-broadcast-pin"></i>
             </div>
             <div class="grow" style="min-width: 0">
@@ -225,10 +230,16 @@ function formatTime(dt?: string): string {
                 · {{ cfg.schedule_type === 'manual' ? '手动' : `每 ${cfg.schedule_interval} 分钟` }}
               </div>
             </div>
-            <span class="badge" :class="cfg.enabled ? 'badge-success' : 'badge-secondary'" @click="toggleEnabled(cfg)" style="cursor: pointer">
-              <i class="bi" :class="cfg.enabled ? 'bi-play-fill' : 'bi-pause-fill'"></i>
-              {{ cfg.enabled ? '运行中' : '已停用' }}
-            </span>
+            <button
+              type="button"
+              class="badge monitor-toggle-badge"
+              :class="isEnabled(cfg) ? 'badge-success' : 'badge-secondary'"
+              :aria-pressed="isEnabled(cfg)"
+              @click="toggleEnabled(cfg)"
+            >
+              <i class="bi" :class="isEnabled(cfg) ? 'bi-play-fill' : 'bi-pause-fill'"></i>
+              {{ isEnabled(cfg) ? '运行中' : '已停用' }}
+            </button>
           </div>
 
           <div class="monitor-card-body">
@@ -248,7 +259,7 @@ function formatTime(dt?: string): string {
           </div>
 
           <div class="monitor-card-foot">
-            <button class="btn btn-primary btn-sm" :disabled="!cfg.enabled" @click="runConfig(cfg)">
+            <button class="btn btn-primary btn-sm" :disabled="!isEnabled(cfg)" @click="runConfig(cfg)">
               <i class="bi bi-play-fill"></i> 立即执行
             </button>
             <div class="flex gap-2">
@@ -274,7 +285,7 @@ function formatTime(dt?: string): string {
         <div v-if="!history.length" class="p-4">
           <UiEmpty icon="bi-inbox" title="暂无发现记录" description="执行监控后会在这里展示抓取到的视频。" />
         </div>
-        <div v-else class="table-wrap">
+        <div v-else class="table-wrap table-cards">
           <table class="table">
             <thead>
               <tr>
@@ -288,17 +299,17 @@ function formatTime(dt?: string): string {
             </thead>
             <tbody>
               <tr v-for="(v, i) in history" :key="i">
-                <td>
+                <td data-label="视频">
                   <div class="clamp-1" style="max-width: 420px" :title="String(v.video_title)">{{ v.video_title }}</div>
                   <div class="fs-xs text-muted">{{ v.channel_title }}</div>
                 </td>
-                <td class="ta-center">
+                <td data-label="类型" class="ta-center">
                   <span class="badge badge-secondary">{{ videoTypeLabel(v.video_type as string) }}</span>
                 </td>
-                <td class="ta-right mono">{{ formatViews(v.view_count) }}</td>
-                <td class="ta-right mono">{{ formatViews(v.like_count) }}</td>
-                <td class="ta-center text-muted fs-sm">{{ formatTime(v.published_at as string) }}</td>
-                <td class="ta-center">
+                <td data-label="播放" class="ta-right mono">{{ formatViews(v.view_count) }}</td>
+                <td data-label="点赞" class="ta-right mono">{{ formatViews(v.like_count) }}</td>
+                <td data-label="发布时间" class="ta-center text-muted fs-sm">{{ formatTime(v.published_at as string) }}</td>
+                <td data-label="状态" class="ta-center">
                   <span v-if="v.added_to_tasks" class="badge badge-success">已入队</span>
                   <span v-else class="badge badge-secondary">未处理</span>
                 </td>
@@ -362,7 +373,7 @@ function formatTime(dt?: string): string {
 
 .monitor-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr));
   gap: var(--sp-4);
 }
 .monitor-card {
@@ -447,5 +458,46 @@ function formatTime(dt?: string): string {
   font-size: var(--fs-xs);
   color: var(--text-muted);
   line-height: 1.6;
+}
+
+/* 启用/停用开关改按钮语义（L3），保留 badge 视觉 */
+.monitor-toggle-badge {
+  font: inherit;
+  cursor: pointer;
+  padding: 4px 10px;
+  height: auto;
+  min-height: 28px;
+  appearance: none;
+}
+
+/* 最近发现表格复用全局 .table-cards 卡片化（components.css），
+   这里仅处理 table-cards 直接加在 .table-wrap 上的 overflow 覆盖 */
+.table-cards.table-wrap,
+.table-cards .table-wrap {
+  overflow: visible;
+}
+@media (max-width: 767px) {
+  /* 卡脚操作区窄屏换行，触控目标统一 >=44px */
+  .monitor-card-foot {
+    flex-wrap: wrap;
+  }
+  .monitor-card-foot .flex.gap-2 {
+    flex-wrap: wrap;
+  }
+  .monitor-card-foot .btn,
+  .monitor-card-foot .btn-icon {
+    min-height: 46px;
+  }
+  .monitor-card-foot .btn-icon {
+    width: 46px;
+    height: 46px;
+  }
+  .monitor-toggle-badge {
+    min-height: 46px;
+  }
+  .btn-icon {
+    width: 46px;
+    height: 46px;
+  }
 }
 </style>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useToastStore } from '@/stores/toast'
@@ -63,7 +63,19 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener('auth:unauthorized', onUnauthorized)
   tasksStore.disconnectStream()
+  document.body.style.overflow = ''
 })
+
+// 抽屉打开时锁定 body 滚动，路由变化统一关闭抽屉
+watch(sidebarOpen, (open) => {
+  document.body.style.overflow = open ? 'hidden' : ''
+})
+watch(
+  () => route.path,
+  () => {
+    sidebarOpen.value = false
+  },
+)
 </script>
 
 <template>
@@ -121,7 +133,7 @@ onBeforeUnmount(() => {
         <div class="topbar-spacer"></div>
         <ThemeSwitcher />
         <RouterLink to="/tasks" class="btn btn-primary btn-sm topbar-add">
-          <i class="bi bi-plus-lg"></i> 新建任务
+          <i class="bi bi-plus-lg"></i> <span class="topbar-add-text">新建任务</span>
         </RouterLink>
       </header>
 
@@ -129,6 +141,21 @@ onBeforeUnmount(() => {
         <RouterView />
       </main>
     </div>
+
+    <!-- 移动端底部导航 -->
+    <nav class="bottom-nav" aria-label="主导航">
+      <RouterLink
+        v-for="item in navItems"
+        :key="item.to"
+        :to="item.to"
+        class="bottom-nav-item"
+        :class="{ active: isActive(item) }"
+        @click="sidebarOpen = false"
+      >
+        <i class="bi bottom-nav-icon" :class="item.icon"></i>
+        <span class="bottom-nav-label">{{ item.label }}</span>
+      </RouterLink>
+    </nav>
 
     <UiToastHost />
   </div>
@@ -312,6 +339,11 @@ onBeforeUnmount(() => {
 .topbar-title {
   font-size: var(--fs-lg);
   font-weight: 600;
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .topbar-spacer {
   flex: 1;
@@ -330,6 +362,55 @@ onBeforeUnmount(() => {
 
 .sidebar-backdrop {
   display: none;
+}
+
+/* ---- 移动端底部导航 ---- */
+.bottom-nav {
+  display: none;
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 1040;
+  height: var(--bottomnav-height);
+  padding-bottom: env(safe-area-inset-bottom);
+  background: var(--bg-sidebar);
+  border-top: 1px solid var(--border-subtle);
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.18);
+}
+.bottom-nav-item {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  color: var(--text-secondary);
+  min-width: 0;
+  position: relative;
+  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.bottom-nav-item.active {
+  color: var(--accent);
+}
+.bottom-nav-item.active::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 28px;
+  height: 3px;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+}
+.bottom-nav-icon {
+  font-size: 1.15rem;
+  line-height: 1;
+}
+.bottom-nav-label {
+  font-size: 10px;
+  line-height: 1;
 }
 
 /* ---- 响应式 ---- */
@@ -360,6 +441,22 @@ onBeforeUnmount(() => {
   }
   .content {
     padding: var(--sp-4);
+  }
+}
+
+/* 移动端：底部导航替换抽屉与汉堡按钮 */
+@media (max-width: 767px) {
+  .topbar-menu {
+    display: none;
+  }
+  .topbar-add-text {
+    display: none;
+  }
+  .bottom-nav {
+    display: flex;
+  }
+  .content {
+    padding-bottom: calc(var(--bottomnav-height) + env(safe-area-inset-bottom));
   }
 }
 </style>

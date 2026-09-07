@@ -19,4 +19,17 @@ defineProps<{ title: string }>()
   gap: var(--sp-4);
   color: var(--text-muted);
 }
+
+@media (max-width: 767px) {
+  .placeholder {
+    min-height: 60vh;
+    padding: var(--sp-6) var(--sp-4);
+    text-align: center;
+  }
+  .placeholder p {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+}
 </style>

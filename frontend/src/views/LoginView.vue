@@ -184,4 +184,26 @@ async function submit() {
   font-size: var(--fs-xs);
   color: var(--text-muted);
 }
+
+@media (max-width: 767px) {
+  .login-page {
+    padding: 16px;
+  }
+  .login-card {
+    width: 100%;
+    padding: 32px 20px 24px;
+  }
+  .login-brand {
+    margin-bottom: 26px;
+  }
+  /* 移动端触控目标 ≥44px，输入与提交按钮统一抬高 */
+  .login-input,
+  .login-submit {
+    height: 48px;
+    min-height: 48px;
+  }
+  .login-submit {
+    margin-top: var(--sp-5);
+  }
+}
 </style>

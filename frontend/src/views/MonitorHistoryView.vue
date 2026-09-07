@@ -130,7 +130,7 @@ function videoUrl(video: Record<string, unknown>): string {
         <button class="btn btn-primary btn-sm mt-3" @click="router.push('/monitor')">返回监控</button>
       </UiEmpty>
     </div>
-    <div v-else class="card table-wrap">
+    <div v-else class="card table-wrap table-cards">
       <table class="table">
         <thead>
           <tr>
@@ -146,19 +146,19 @@ function videoUrl(video: Record<string, unknown>): string {
         </thead>
         <tbody>
           <tr v-for="(v, i) in history" :key="i">
-            <td style="max-width: 340px">
+            <td data-label="视频" style="max-width: 340px">
               <div class="clamp-1" :title="String(v.video_title)">{{ v.video_title }}</div>
               <div class="fs-xs text-muted">{{ v.channel_title }}</div>
             </td>
-            <td class="ta-center">
+            <td data-label="类型" class="ta-center">
               <span class="badge badge-secondary">{{ v.video_type }}</span>
             </td>
-            <td class="ta-right mono">{{ formatViews(v.view_count) }}</td>
-            <td class="ta-right mono">{{ formatViews(v.like_count) }}</td>
-            <td class="ta-right mono">{{ formatViews(v.comment_count) }}</td>
-            <td class="ta-center mono text-muted">{{ v.duration ?? '—' }}</td>
-            <td class="ta-center text-muted fs-sm">{{ formatTime(v.published_at as string) }}</td>
-            <td class="ta-right">
+            <td data-label="播放" class="ta-right mono">{{ formatViews(v.view_count) }}</td>
+            <td data-label="点赞" class="ta-right mono">{{ formatViews(v.like_count) }}</td>
+            <td data-label="评论" class="ta-right mono">{{ formatViews(v.comment_count) }}</td>
+            <td data-label="时长" class="ta-center mono text-muted">{{ v.duration ?? '—' }}</td>
+            <td data-label="发布时间" class="ta-center text-muted fs-sm">{{ formatTime(v.published_at as string) }}</td>
+            <td data-label="操作" class="ta-right">
               <div class="flex gap-2 justify-end items-center">
                 <a class="btn-icon" :href="videoUrl(v)" target="_blank" rel="noopener" aria-label="在 YouTube 打开">
                   <i class="bi bi-box-arrow-up-right"></i>
@@ -219,5 +219,40 @@ function videoUrl(video: Record<string, unknown>): string {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 历史列表复用全局 .table-cards 卡片化（components.css），
+   这里仅处理 table-cards 直接加在 .table-wrap 上的 overflow 覆盖 */
+.table-cards.table-wrap,
+.table-cards .table-wrap {
+  overflow: visible;
+}
+@media (max-width: 767px) {
+  /* 操作列去掉冗余标签，放大触控 >=44px */
+  .table-cards .table tbody td[data-label="操作"]::before {
+    display: none;
+  }
+  .table-cards .table tbody td[data-label="操作"] .flex {
+    justify-content: flex-end;
+  }
+  .table-cards .table tbody td[data-label="操作"] .btn,
+  .table-cards .table tbody td[data-label="操作"] .btn-icon {
+    min-height: 46px;
+  }
+  .table-cards .table tbody td[data-label="操作"] .btn-icon {
+    width: 46px;
+    height: 46px;
+  }
+  .btn-icon {
+    width: 46px;
+    height: 46px;
+  }
+
+  .page-actions {
+    flex-wrap: wrap;
+  }
+  .page-actions .btn {
+    min-height: 46px;
+  }
 }
 </style>

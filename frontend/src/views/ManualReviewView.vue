@@ -148,7 +148,7 @@ const reviewCount = computed(() => tasks.value.length)
             <span class="mono text-muted fs-xs">{{ task.id.slice(0, 8) }}</span>
             <TaskStatusBadge :status="task.status" />
           </div>
-          <div class="flex gap-2">
+          <div class="flex gap-2 review-actions">
             <button class="btn btn-ghost btn-sm" title="预览本地成品视频" @click="openPreview(task)">
               <i class="bi bi-play-circle"></i> 预览
             </button>
@@ -324,5 +324,37 @@ const reviewCount = computed(() => tasks.value.length)
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+@media (max-width: 767px) {
+  .page-header {
+    align-items: flex-start;
+  }
+  .page-actions {
+    width: 100%;
+  }
+  .review-card {
+    padding: var(--sp-4);
+  }
+  .review-head {
+    align-items: stretch;
+  }
+  /* 操作区在窄屏切换为可换行的双列栅格，保证不横向溢出 */
+  .review-actions {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--sp-2);
+  }
+  .review-head .btn,
+  .review-foot .btn {
+    height: auto;
+    min-height: 44px;
+    padding: 0 var(--sp-3);
+    white-space: normal;
+  }
+  .review-head .btn {
+    justify-content: center;
+  }
 }
 </style>

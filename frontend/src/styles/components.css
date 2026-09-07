@@ -532,3 +532,103 @@ kbd {
     flex-wrap: wrap;
   }
 }
+
+/* ================= 移动端触控目标（<768） ================= */
+@media (max-width: 767px) {
+  /* 图标按钮触控区扩到 40px，图标视觉尺寸不变 */
+  .btn-icon {
+    width: 40px;
+    height: 40px;
+  }
+  /* 开关加大，外层可点区域保证 >=44px */
+  .toggle {
+    width: 46px;
+    height: 26px;
+  }
+  .toggle::after {
+    width: 20px;
+    height: 20px;
+    top: 2px;
+    left: 2px;
+  }
+  .toggle.on::after {
+    transform: translateX(22px);
+  }
+  .ui-toggle-row {
+    min-height: 44px;
+    padding: 4px 0;
+  }
+}
+
+/* ================= 表格 → 卡片化（统一模板） =================
+   视图给每条 td 加 data-label="列名" 即可复用；主列（标题/视频）用
+   data-label 且 flex-direction:column，并可选 order 提到首位。 */
+@media (max-width: 767px) {
+  .table-cards .table-wrap {
+    overflow: visible;
+  }
+  .table-cards .table,
+  .table-cards .table thead,
+  .table-cards .table tbody,
+  .table-cards .table th,
+  .table-cards .table td,
+  .table-cards .table tr {
+    display: block;
+    width: 100%;
+  }
+  .table-cards .table thead {
+    display: none;
+  }
+  .table-cards .table tbody tr {
+    margin-bottom: var(--sp-3);
+    padding: var(--sp-3) var(--sp-4);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+  }
+  .table-cards .table tbody tr:hover {
+    background: var(--bg-hover);
+  }
+  .table-cards .table tbody td {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--sp-2);
+    padding: 5px 0;
+    border-bottom: 1px solid var(--border-subtle);
+    text-align: left;
+  }
+  .table-cards .table tbody td:last-child {
+    border-bottom: none;
+  }
+  .table-cards .table tbody td[data-label]::before {
+    content: attr(data-label);
+    flex-shrink: 0;
+    width: 64px;
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    color: var(--text-muted);
+    padding-top: 2px;
+  }
+  .table-cards .table tbody td[data-label="标题"],
+  .table-cards .table tbody td[data-label="视频"] {
+    flex-direction: column;
+    gap: 4px;
+  }
+  .table-cards .table tbody td[data-label="标题"]::before,
+  .table-cards .table tbody td[data-label="视频"]::before {
+    display: none;
+  }
+  .table-cards .table tbody td[data-label="标题"] {
+    order: -1;
+  }
+  .table-cards .table tbody td[data-label="视频"] {
+    order: -1;
+  }
+  .table-cards .table tbody td.ta-right {
+    display: block;
+    text-align: right;
+    border-top: 1px solid var(--border-subtle);
+    margin-top: 4px;
+    padding-top: 8px;
+  }
+}

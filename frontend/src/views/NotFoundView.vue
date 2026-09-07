@@ -34,4 +34,21 @@ import { RouterLink } from 'vue-router'
 .nf-text {
   color: var(--text-muted);
 }
+
+@media (max-width: 767px) {
+  .nf-wrap {
+    min-height: 100dvh;
+    padding: var(--sp-6) var(--sp-4);
+    text-align: center;
+    gap: var(--sp-5);
+  }
+  .nf-code {
+    font-size: 64px;
+  }
+  .nf-wrap .btn {
+    min-height: 48px;
+    height: 48px;
+    padding: 0 var(--sp-6);
+  }
+}
 </style>

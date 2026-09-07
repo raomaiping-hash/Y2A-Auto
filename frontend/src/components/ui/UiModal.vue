@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, useId, watch } from 'vue'
 
 const props = withDefaults(
   defineProps<{
@@ -13,6 +13,8 @@ const props = withDefaults(
 )
 
 const emit = defineEmits<{ close: [] }>()
+
+const uid = useId()
 
 function onKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape' && props.open) emit('close')
@@ -39,9 +41,9 @@ const sizeClass = computed(() => `ui-modal--${props.size}`)
         class="ui-modal-backdrop"
         @mousedown.self="closeOnBackdrop && emit('close')"
       >
-        <div class="ui-modal" :class="sizeClass" role="dialog" aria-modal="true">
+        <div class="ui-modal" :class="sizeClass" role="dialog" aria-modal="true" :aria-labelledby="title ? uid : undefined">
           <header v-if="title || !hideClose" class="ui-modal-head">
-            <h3 class="ui-modal-title">{{ title }}</h3>
+            <h3 class="ui-modal-title" :id="title ? uid : undefined">{{ title }}</h3>
             <button v-if="!hideClose" class="btn-icon" aria-label="关闭" @click="emit('close')">
               <i class="bi bi-x-lg"></i>
             </button>
@@ -125,5 +127,24 @@ const sizeClass = computed(() => `ui-modal--${props.size}`)
 .ui-modal-leave-to .ui-modal {
   transform: translateY(10px) scale(0.98);
   opacity: 0;
+}
+
+/* 移动端：贴底抽屉化 */
+@media (max-width: 767px) {
+  .ui-modal-backdrop {
+    align-items: flex-end;
+    padding: 0;
+  }
+  .ui-modal {
+    max-height: 88vh;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .ui-modal-foot {
+    flex-direction: column;
+  }
+  .ui-modal-foot .btn {
+    width: 100%;
+  }
 }
 </style>

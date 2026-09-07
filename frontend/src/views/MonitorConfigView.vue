@@ -428,9 +428,9 @@ async function submit() {
 
       <!-- 操作 -->
       <div class="card">
-        <div class="card-body flex justify-between items-center">
+        <div class="card-body cfg-actions">
           <span class="fs-xs text-muted">保存后立即生效，定时任务将在下一次调度时更新</span>
-          <div class="flex gap-2">
+          <div class="flex gap-2 cfg-actions-btns">
             <button type="button" class="btn btn-secondary" @click="router.push('/monitor')">取消</button>
             <button type="submit" class="btn btn-primary" :disabled="submitting">
               <span v-if="submitting" class="spinner spinner-sm"></span>
@@ -494,7 +494,7 @@ async function submit() {
 .cfg-grid > .card:last-child {
   grid-column: 1 / -1;
 }
-@media (max-width: 960px) {
+@media (max-width: 767px) {
   .cfg-grid {
     grid-template-columns: 1fr;
   }
@@ -513,7 +513,7 @@ async function submit() {
   grid-template-columns: 1fr 1fr;
   gap: var(--sp-4);
 }
-@media (max-width: 560px) {
+@media (max-width: 767px) {
   .grid-2 {
     grid-template-columns: 1fr;
   }
@@ -543,5 +543,52 @@ async function submit() {
   background: var(--bg-raised);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
+}
+
+/* 保存区：桌面左右分布，移动端堆叠全宽按钮 */
+.cfg-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+@media (max-width: 767px) {
+  .cfg-actions {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--sp-3);
+  }
+  .cfg-actions-btns {
+    flex-direction: column;
+    gap: var(--sp-2);
+  }
+  .cfg-actions-btns .btn {
+    width: 100%;
+    min-height: 46px;
+  }
+  .btn-icon {
+    width: 46px;
+    height: 46px;
+  }
+  /* 快速模板在窄屏横向滑动，避免换行占高 */
+  .preset-row {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .preset-row .btn {
+    white-space: nowrap;
+    flex-shrink: 0;
+    min-height: 46px;
+  }
+  .preset-label {
+    flex-shrink: 0;
+  }
+  /* 视频类型 chips 触控目标 >=44px */
+  .type-chip {
+    min-height: 46px;
+    padding: 11px 16px;
+  }
 }
 </style>

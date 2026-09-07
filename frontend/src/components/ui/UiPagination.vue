@@ -98,4 +98,9 @@ function go(p: number) {
   font-size: var(--fs-xs);
   color: var(--text-muted);
 }
+@media (max-width: 767px) {
+  .ui-pagination {
+    flex-wrap: wrap;
+  }
+}
 </style>
